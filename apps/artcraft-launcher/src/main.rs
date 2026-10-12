@@ -5,6 +5,12 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod connections;
+mod features;
+mod features_tools;
+mod history_port;
+#[cfg(test)]
+mod history_port_tests;
 mod settings_file;
 #[cfg(target_os = "macos")]
 mod spaces;
@@ -285,6 +291,8 @@ fn no_window() -> egui::RawInput {
 struct DesktopHost {
     tray: bool,
     quit: bool,
+    connections: connections::DesktopConnections,
+    features: features::DesktopFeatures,
 }
 
 impl Host for DesktopHost {
@@ -327,6 +335,13 @@ impl Host for DesktopHost {
     fn quit(&mut self) {
         self.quit = true;
     }
+
+    fn features(&mut self) -> Option<&mut dyn artcraft_launcher_ui_egui::FeaturesPort> {
+        Some(&mut self.features)
+    }
+    fn connections(&mut self) -> Option<&mut dyn artcraft_launcher_ui_egui::ConnectionsPort> {
+        Some(&mut self.connections)
+    }
 }
 
 /// Everything that outlives a window: the UI state and its backend, the tray icon, and the work
@@ -361,7 +376,12 @@ impl Launcher {
         Self {
             ui: LauncherUi::new(&windowless, backend, Settings::default()),
             tray: None,
-            host: DesktopHost { tray: false, quit: false },
+            host: DesktopHost {
+                tray: false,
+                quit: false,
+                connections: connections::DesktopConnections::new(),
+                features: features::DesktopFeatures::new(),
+            },
             starts,
             windowless,
             run_again,

@@ -509,11 +509,7 @@ pub(crate) mod linux {
                     } else {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         let err = stderr.trim();
-                        let err = if err.is_empty() {
-                            String::from_utf8_lossy(&output.stdout).trim().to_string()
-                        } else {
-                            err.to_string()
-                        };
+                        let err = if err.is_empty() { String::from_utf8_lossy(&output.stdout).trim().to_string() } else { err.to_string() };
                         if err.is_empty() {
                             Err("Flatpak couldn't install the bundle (it needs the Flathub remote for its runtime)".into())
                         } else {
