@@ -398,3 +398,9 @@ filter	Installed	Telepítve
 	Theme	Téma
 	Plug-in	Beépülő modul
 	Resource	Erőforrás
+	Showing only {what}	Csak ezek láthatók: {what}
+	works with {app}	működik ezzel: {app}
+	themes	témák
+	plug-ins	bővítmények
+	resources	erőforrások
+	Show all	Összes megjelenítése

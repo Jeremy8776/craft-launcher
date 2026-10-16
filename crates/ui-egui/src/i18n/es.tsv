@@ -378,3 +378,9 @@ filter	Installed	Instaladas
 	Theme	Tema
 	Plug-in	Complemento
 	Resource	Recurso
+	Showing only {what}	Solo se muestra: {what}
+	works with {app}	funciona con {app}
+	themes	temas
+	plug-ins	complementos
+	resources	recursos
+	Show all	Mostrar todo

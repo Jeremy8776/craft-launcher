@@ -400,3 +400,9 @@ filter	Installed	インストール済み
 	Theme	テーマ
 	Plug-in	プラグイン
 	Resource	リソース
+	Showing only {what}	表示中: {what}
+	works with {app}	{app} で使えるもの
+	themes	テーマ
+	plug-ins	プラグイン
+	resources	リソース
+	Show all	すべて表示

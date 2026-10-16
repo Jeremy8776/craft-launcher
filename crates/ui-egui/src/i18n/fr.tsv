@@ -395,3 +395,9 @@ filter	Installed	Installées
 	Theme	Thème
 	Plug-in	Plug-in
 	Resource	Ressource
+	Showing only {what}	Uniquement {what}
+	works with {app}	compatible avec {app}
+	themes	thèmes
+	plug-ins	modules
+	resources	ressources
+	Show all	Tout afficher

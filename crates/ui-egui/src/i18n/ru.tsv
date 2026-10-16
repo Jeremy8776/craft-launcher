@@ -393,3 +393,9 @@ filter	Installed	Установлены
 	Theme	Тема
 	Plug-in	Плагин
 	Resource	Ресурс
+	Showing only {what}	Показано только: {what}
+	works with {app}	работает с {app}
+	themes	темы
+	plug-ins	плагины
+	resources	ресурсы
+	Show all	Показать все
