@@ -7,11 +7,11 @@ use std::rc::Rc;
 
 use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event};
 use artcraft_launcher_core::{Arch, Os, Platform};
-use artcraft_launcher_ui_egui::features::{Install, Sample, Snapshot, ToolChoice, ToolState, ToolStatus};
+use artcraft_launcher_ui_egui::features::{Install, LocalUse, Sample, Snapshot, ToolChoice, ToolState, ToolStatus};
 use artcraft_launcher_ui_egui::i18n::{Lang, set_test_lang};
 use artcraft_launcher_ui_egui::theme::ThemeChoice;
 use artcraft_launcher_ui_egui::{ConnectionsPort, Failure, FeaturesPort, Host, KeyView, LauncherUi, Row, Settings, TestOutcome, TestTarget};
-use craft_ai_features::{Feature, InstalledFile, Inventory, builtin, plan};
+use craft_ai_features::{Feature, InstalledFile, Inventory, builtin, plans};
 use craft_ai_model::{Billing, ConnectionDraft, ConnectionId, Locality, ModelId, PRESETS};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -34,12 +34,30 @@ impl Backend for Quiet {
     }
 }
 
+/// The built-in features, with the local model optionally marked as not runnable by any app yet.
+fn catalogue(not_runnable: bool) -> Vec<Feature> {
+    let mut features = builtin();
+    if not_runnable {
+        for recipe in features.iter_mut().flat_map(|f| f.locals.iter_mut()) {
+            recipe.usable = false;
+        }
+    }
+    features
+}
+
 #[derive(Default)]
 struct World {
+    /// Pretend no app can run the local model yet, to keep the "planned" wording covered.
+    not_runnable: bool,
+    /// Narrow the rendered catalogue so a UI test never clicks a control outside the viewport.
+    feature_titles: Option<Vec<String>>,
     inventory: Inventory,
     install: Install,
     scans: usize,
     installs: Vec<(String, bool)>,
+    model_installs: Vec<(String, String, bool)>,
+    local_uses: Vec<String>,
+    model_uses: Vec<(String, String)>,
     cancels: usize,
     refreshes: usize,
     tools: Vec<ToolState>,
@@ -49,14 +67,76 @@ struct World {
     tests: Vec<(String, bool)>,
     test_cancels: usize,
     dismissals: usize,
+    folders: artcraft_launcher_ui_egui::features::FoldersSnapshot,
+    folder_calls: Vec<String>,
 }
 
 #[derive(Clone, Default)]
 struct Features(Rc<RefCell<World>>);
 
+impl Features {
+    fn only(titles: &[&str]) -> Self {
+        let features = Self::default();
+        features.0.borrow_mut().feature_titles = Some(titles.iter().map(|title| (*title).to_owned()).collect());
+        features
+    }
+}
+
+/// Generate images has two models to pick from; nothing else is connected.
+fn with_image_choices(f: &Features) {
+    let mut w = f.0.borrow_mut();
+    w.inventory = bare_comfy();
+    w.tools = vec![ToolState {
+        feature: "generate-image".into(),
+        choices: vec![
+            ToolChoice {
+                connection: ConnectionId::new("openai").unwrap(),
+                model: ModelId::new("gpt-image-1").unwrap(),
+                provider: "openai".into(),
+                label: "GPT Image 1, OpenAI".into(),
+                local: false,
+            },
+            ToolChoice {
+                connection: ConnectionId::new("local").unwrap(),
+                model: ModelId::new("flux").unwrap(),
+                provider: "comfyui".into(),
+                label: "Flux, My ComfyUI".into(),
+                local: true,
+            },
+        ],
+        bound: None,
+        status: ToolStatus::NoChoice,
+        can_test: true,
+        costly: false,
+    }];
+}
+
+fn pickers<'a>(h: &'a Harness<'_, State>) -> Vec<egui_kittest::Node<'a>> {
+    h.query_all_by_role(Role::ComboBox)
+        .filter(|node| {
+            !matches!(
+                node.accesskit_node().value().as_deref(),
+                Some("Suite order" | "This tool" | "All compatible tools" | "Choose specific tools" | "ComfyUI" | "Inside this app" | "OpenAI")
+            )
+        })
+        .collect()
+}
+
+fn picker_text(h: &Harness<'_, State>) -> String {
+    pickers(h)[0].accesskit_node().value().map(|v| v.to_string()).unwrap_or_default()
+}
+
+fn visible_catalogue(world: &World) -> Vec<Feature> {
+    let mut features = catalogue(world.not_runnable);
+    if let Some(titles) = &world.feature_titles {
+        features.retain(|feature| titles.contains(&feature.title));
+    }
+    features
+}
+
 impl FeaturesPort for Features {
     fn features(&self) -> Vec<Feature> {
-        builtin()
+        visible_catalogue(&self.0.borrow())
     }
     fn rescan(&mut self) {
         self.0.borrow_mut().scans += 1;
@@ -66,12 +146,15 @@ impl FeaturesPort for Features {
     }
     fn snapshot(&mut self) -> Snapshot {
         let w = self.0.borrow();
+        let features = visible_catalogue(&w);
         Snapshot {
             scanning: false,
-            plans: builtin().iter().map(|f| plan(f, &w.inventory)).collect(),
+            plans: features.iter().flat_map(|f| plans(f, &w.inventory)).collect(),
             tools: w.tools.clone(),
             install: w.install.clone(),
             sample: w.sample.clone(),
+            folders: w.folders.clone(),
+            local_use: LocalUse::Idle,
         }
     }
     fn choose(&mut self, feature: &str, choice: Option<(ConnectionId, ModelId)>) -> Result<(), String> {
@@ -109,6 +192,23 @@ impl FeaturesPort for Features {
         w.installs.push((feature.to_owned(), accepted));
         w.install = Install::Running {
             feature: feature.to_owned(),
+            recipe: "sam3-segment".into(),
+            file: "sam3.safetensors".into(),
+            verifying: false,
+            done: 1_700_000_000,
+            total: 3_449_860_632,
+            step: 1,
+            of: 1,
+        };
+        Ok(())
+    }
+    fn install_recipe(&mut self, feature: &str, recipe: &str, accepted: bool) -> Result<(), String> {
+        let mut w = self.0.borrow_mut();
+        w.model_installs.push((feature.to_owned(), recipe.to_owned(), accepted));
+        w.installs.push((feature.to_owned(), accepted));
+        w.install = Install::Running {
+            feature: feature.to_owned(),
+            recipe: recipe.to_owned(),
             file: "sam3.safetensors".into(),
             verifying: false,
             done: 1_700_000_000,
@@ -123,6 +223,15 @@ impl FeaturesPort for Features {
         w.cancels += 1;
         w.install = Install::Idle;
     }
+    fn use_local(&mut self, feature: &str) -> Result<(), String> {
+        self.0.borrow_mut().local_uses.push(feature.to_owned());
+        Ok(())
+    }
+    fn use_local_recipe(&mut self, feature: &str, recipe: &str) -> Result<(), String> {
+        self.0.borrow_mut().model_uses.push((feature.to_owned(), recipe.to_owned()));
+        self.0.borrow_mut().local_uses.push(feature.to_owned());
+        Ok(())
+    }
     fn history(&mut self) -> Result<craft_ai_model::HistoryLog, String> {
         Ok(craft_ai_model::HistoryLog::default())
     }
@@ -134,6 +243,21 @@ impl FeaturesPort for Features {
     }
     fn clock(&self) -> artcraft_launcher_ui_egui::features::Clock {
         artcraft_launcher_ui_egui::features::Clock::default()
+    }
+    fn refresh_folders(&mut self) {
+        self.0.borrow_mut().folder_calls.push("refresh".into());
+    }
+    fn add_folder(&mut self) {
+        self.0.borrow_mut().folder_calls.push("add".into());
+    }
+    fn set_default_folder(&mut self, id: &str) {
+        self.0.borrow_mut().folder_calls.push(format!("default:{id}"));
+    }
+    fn rescan_folder(&mut self, id: &str) {
+        self.0.borrow_mut().folder_calls.push(format!("rescan:{id}"));
+    }
+    fn remove_folder(&mut self, id: &str) {
+        self.0.borrow_mut().folder_calls.push(format!("remove:{id}"));
     }
 }
 
@@ -248,6 +372,22 @@ fn with_sam3() -> Inventory {
     }
 }
 
+fn with_sam21() -> Inventory {
+    // The checkpoint and every Florence-2-large detector file, as the catalogue lists them.
+    let features = builtin();
+    let recipe = features.iter().flat_map(|f| &f.locals).find(|r| r.workflow == "sam21-segment").unwrap();
+    Inventory {
+        comfyui_found: true,
+        files: recipe
+            .models
+            .iter()
+            .map(|m| InstalledFile { folder: m.folder.clone(), filename: m.filename.clone(), size_bytes: m.size_bytes })
+            .collect(),
+        node_folders: vec!["comfyui-segment-anything-2".into(), "comfyui-florence2".into()],
+        ..Inventory::default()
+    }
+}
+
 fn open_with(features: &Features, connections: &Connections) -> Harness<'static, State> {
     let mut h = harness(features.clone(), connections.clone());
     settle(&mut h);
@@ -260,6 +400,18 @@ fn open(features: &Features) -> Harness<'static, State> {
     open_with(features, &Connections::default())
 }
 
+fn open_models(features: &Features) -> Harness<'static, State> {
+    let mut h = open(features);
+    press(&mut h, "Models");
+    h
+}
+
+fn open_connections(features: &Features, connections: &Connections) -> Harness<'static, State> {
+    let mut h = open_with(features, connections);
+    press(&mut h, "Connections");
+    h
+}
+
 fn press(h: &mut Harness<'_, State>, label: &str) {
     h.get_by_role_and_label(Role::Button, label).click();
     settle(h);
@@ -268,113 +420,203 @@ fn press(h: &mut Harness<'_, State>, label: &str) {
 // ---- the list ----
 
 #[test]
-fn set_up_ai_lists_what_can_be_set_up_not_the_tools() {
+fn set_up_ai_lists_capabilities_and_setup_paths_first() {
     let f = Features::default();
     f.0.borrow_mut().inventory = bare_comfy();
     let h = open(&f);
-    h.get_by_label("Set up one or more of these and the AI tools switch on in every Craft app that has them.");
-    h.get_by_label("On this computer");
-    h.get_by_label("Hosted services");
-    for name in ["SAM 3", "OpenAI", "Black Forest Labs", "Seedance (Volcengine Ark)"] {
+    h.query_all_by_label("Set up AI").next().unwrap();
+    h.get_by_role_and_label(Role::Button, "Tools");
+    h.get_by_label("See which Craft apps use each AI tool and set its model.");
+    h.get_by_label("Usage");
+    h.get_by_label("Connections");
+    h.get_by_label("Models");
+    h.get_by_label("Engines");
+    for name in ["Select subject", "Remove background", "Remove objects", "Generative fill", "Generate images"] {
         h.get_by_label(name);
     }
+    assert!(h.query_all_by_role_and_label(Role::Button, "Configure").count() >= 1);
     assert!(h.query_by_label("Start from").is_none() && h.query_by_label("Add a provider").is_none(), "no provider form to start with");
     assert_eq!(f.0.borrow().scans, 1);
-    // No wall of every tool and no tabs: tools appear only as what a card switches on.
-    assert!(h.query_by_role_and_label(Role::Button, "Select subject").is_none());
-    assert!(h.query_by_role_and_label(Role::Button, "Providers").is_none());
 }
 
 #[test]
-fn a_card_says_which_tools_it_switches_on_and_in_which_apps() {
+fn each_tool_names_the_apps_that_may_use_it() {
     let f = Features::default();
     f.0.borrow_mut().inventory = bare_comfy();
     let h = open(&f);
-    // OpenAI is named by generative fill and generate image.
     assert!(h.query_all_by_label("Generative fill").count() >= 1);
     assert!(h.query_all_by_label("Generate images").count() >= 1);
-    assert!(h.query_all_by_label_contains("In PhotoCraft").count() >= 1, "the apps are named");
-    assert!(h.query_all_by_label("Switches on").count() >= 5);
+    assert!(h.query_all_by_label_contains("Suggested for PhotoCraft:").count() >= 1, "the app and its current proposal status are named");
 }
 
 #[test]
-fn what_is_already_switched_on_is_shown_at_the_top() {
+fn a_connected_model_is_offered_without_being_selected_automatically() {
     let f = Features::default();
-    let h = open(&f);
-    h.get_by_label("Nothing yet. Set something up below.");
+    f.0.borrow_mut().feature_titles = Some(vec!["Generate images".into()]);
+    with_image_choices(&f);
+    let mut h = open(&f);
+    press(&mut h, "Configure");
+    assert_eq!(picker_text(&h), "Automatic (best available)");
+    assert!(f.0.borrow().chosen.is_empty(), "refreshing a connection must not write a suite default");
+}
 
-    let f = Features::default();
-    f.0.borrow_mut().tools = vec![ready_tool("generate-image")];
-    let h = open(&f);
-    assert!(h.query_by_label("Nothing yet. Set something up below.").is_none());
-    // Once in the strip, once on each card that switches it on.
-    assert!(h.query_all_by_label("Generate images").count() >= 2);
+#[test]
+fn each_local_model_has_its_own_name_and_setup_state() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = bare_comfy();
+    let mut h = open(&f);
+    press(&mut h, "Models");
+    for name in ["SAM 3", "SAM 2.1", "SAM 2", "SAM 1"] {
+        h.get_by_label(name);
+    }
 }
 
 #[test]
 fn the_local_model_says_what_this_computer_still_needs() {
     let f = Features::default();
     f.0.borrow_mut().inventory = bare_comfy();
-    let h = open(&f);
+    let h = open_models(&f);
     h.get_by_label("Set up, 3.4 GB");
 
     let f = Features::default();
+    f.0.borrow_mut().not_runnable = true;
     f.0.borrow_mut().inventory = with_sam3();
-    let h = open(&f);
+    let h = open_models(&f);
     h.get_by_label("Files in place");
     assert!(h.query_by_label("Ready").is_none(), "installed files are not a runnable tool");
-    h.get_by_label("Planned for"); // The local card must not promise an enabled tool.
     assert!(h.query_by_label("Set up, 3.4 GB").is_none());
 
     let f = Features::default();
-    let h = open(&f);
-    h.get_by_label("ComfyUI was not found on this computer");
+    let h = open_models(&f);
+    assert!(h.query_all_by_label("The local service for these files was not found.").next().is_some());
+}
+
+#[test]
+fn finishing_sam3_does_not_claim_sam21_was_downloaded() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = bare_comfy();
+    let mut h = open_models(&f);
+    press(&mut h, "Set up, 2.0 GB");
+    {
+        let mut w = f.0.borrow_mut();
+        w.inventory = with_sam21();
+        w.install = Install::Done { feature: "select-subject".into(), recipe: "sam3-segment".into() };
+    }
+    settle(&mut h);
+    assert!(h.query_by_label("Model files installed. The app tool is not connected yet.").is_none());
 }
 
 #[test]
 fn completed_download_does_not_claim_the_tool_can_run() {
+    let (f, mut h) = open_setup_with(true);
+    {
+        let mut w = f.0.borrow_mut();
+        w.inventory = with_sam3();
+        w.install = Install::Done { feature: "select-subject".into(), recipe: "sam3-segment".into() };
+    }
+    settle(&mut h);
+    assert!(h.query_by_label("Installed. The files are ready to test.").is_none());
+}
+
+#[test]
+fn completed_download_of_a_runnable_model_says_files_are_ready_to_test() {
     let (f, mut h) = open_setup();
     {
         let mut w = f.0.borrow_mut();
         w.inventory = with_sam3();
-        w.install = Install::Done { feature: "select-subject".into() };
+        w.install = Install::Done { feature: "select-subject".into(), recipe: "sam3-segment".into() };
     }
     settle(&mut h);
-    assert!(h.query_by_label("Installed. This tool is ready on this computer.").is_none());
+    h.get_by_label("Installed. The files are ready to test.");
 }
 
 #[test]
 fn a_local_model_no_app_can_run_yet_says_so_instead_of_promising_a_tool() {
     let f = Features::default();
+    f.0.borrow_mut().not_runnable = true;
     f.0.borrow_mut().inventory = bare_comfy();
-    let h = open(&f);
-    h.get_by_label("The apps cannot run this model yet. You can download it now, and the tool switches on when they can.");
+    let h = open_models(&f);
+    assert!(h.query_all_by_label("Setup only").next().is_some());
+    assert_eq!(h.query_all_by_label("Models marked Setup only can be installed, but no Craft app can use them yet.").count(), 1);
 }
 
 #[test]
 fn a_model_whose_files_are_here_is_not_told_to_download_them() {
     let f = Features::default();
+    f.0.borrow_mut().not_runnable = true;
     f.0.borrow_mut().inventory = with_sam3();
-    let h = open(&f);
+    let h = open_models(&f);
     h.get_by_label("Files in place");
-    h.get_by_label("The files are in place. The apps cannot run this model yet, and the tool switches on when they can.");
-    assert!(h.query_by_label("The apps cannot run this model yet. You can download it now, and the tool switches on when they can.").is_none());
+    assert!(h.query_all_by_label("Setup only").next().is_some());
+    assert_eq!(h.query_all_by_label("Models marked Setup only can be installed, but no Craft app can use them yet.").count(), 1);
+    assert!(h.query_by_label("Set up, 3.4 GB").is_none());
+}
+
+#[test]
+fn existing_local_files_need_an_explicit_use_action_before_registration() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = with_sam3();
+    let mut h = open_models(&f);
+    assert!(f.0.borrow().local_uses.is_empty(), "opening must not bind a model");
+    press(&mut h, "Check and use model");
+    assert_eq!(f.0.borrow().local_uses, ["select-subject"]);
+}
+
+#[test]
+fn ready_second_model_uses_its_own_recipe_when_enabled() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = with_sam21();
+    let mut h = open_models(&f);
+    press(&mut h, "Check and use model");
+    assert_eq!(f.0.borrow().model_uses, [("select-subject".into(), "sam21-segment".into())]);
 }
 
 // ---- local setup ----
 
 fn open_setup() -> (Features, Harness<'static, State>) {
+    open_setup_with(false)
+}
+
+fn open_setup_with(not_runnable: bool) -> (Features, Harness<'static, State>) {
     let f = Features::default();
+    f.0.borrow_mut().feature_titles = Some(vec!["Select subject".into()]);
+    f.0.borrow_mut().not_runnable = not_runnable;
     f.0.borrow_mut().inventory = bare_comfy();
-    let mut h = open(&f);
+    let mut h = open_models(&f);
     press(&mut h, "Set up, 3.4 GB");
     (f, h)
 }
 
 #[test]
+fn opening_sam21_setup_shows_only_its_files_and_size() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = bare_comfy();
+    let mut h = open_models(&f);
+    press(&mut h, "Set up, 2.0 GB");
+    h.get_by_label("Set up SAM 2.1");
+    h.get_by_label_contains("sam2.1_hiera_large-fp16.safetensors, 449 MB");
+    h.get_by_label_contains("Florence-2-large/model.safetensors, 1.6 GB");
+    h.get_by_label_contains("Total 2.0 GB");
+    assert!(h.query_by_label_contains("sam3.safetensors, 3.4 GB").is_none());
+}
+
+#[test]
+fn downloading_sam21_names_its_recipe_to_the_host() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = bare_comfy();
+    let mut h = open_models(&f);
+    press(&mut h, "Set up, 2.0 GB");
+    // The setup page now lists what the model runs, so the button sits below the first screen.
+    h.get_by_role_and_label(Role::Button, "Download 2.0 GB").scroll_to_me();
+    settle(&mut h);
+    press(&mut h, "Download 2.0 GB");
+    assert_eq!(f.0.borrow().model_installs, [("select-subject".into(), "sam21-segment".into(), false)]);
+}
+
+#[test]
 fn setting_up_shows_the_size_the_licence_and_waits_for_agreement() {
     let (f, mut h) = open_setup();
-    h.get_by_label("Set up Select subject");
+    h.get_by_label("Set up SAM 3");
     h.get_by_label("Will be downloaded");
     h.get_by_label_contains("sam3.safetensors, 3.4 GB, from huggingface.co");
     h.get_by_label("Licence");
@@ -408,7 +650,8 @@ fn progress_and_cancel_are_shown_while_downloading() {
 #[test]
 fn a_failed_download_says_why() {
     let (f, mut h) = open_setup();
-    f.0.borrow_mut().install = Install::Failed { feature: "select-subject".into(), message: "the source refused the download".into() };
+    f.0.borrow_mut().install =
+        Install::Failed { feature: "select-subject".into(), recipe: "sam3-segment".into(), message: "the source refused the download".into() };
     settle(&mut h);
     h.get_by_label_contains("The download failed: the source refused the download");
 }
@@ -417,7 +660,7 @@ fn a_failed_download_says_why() {
 fn back_from_setup_returns_to_the_list_and_looks_at_the_tools_again() {
     let (f, mut h) = open_setup();
     press(&mut h, "Back");
-    h.get_by_label("Hosted services");
+    h.get_by_role_and_label(Role::Button, "Models");
     assert_eq!(f.0.borrow().refreshes, 2);
 }
 
@@ -425,25 +668,27 @@ fn back_from_setup_returns_to_the_list_and_looks_at_the_tools_again() {
 
 #[test]
 fn connect_opens_that_services_own_short_form_and_back_returns_to_the_list() {
-    let f = Features::default();
-    let mut h = open(&f);
-    // The first Connect on the list is the first hosted service.
-    h.query_all_by_role_and_label(Role::Button, "Connect").next().unwrap().click();
+    let f = Features::only(&["Generate images"]);
+    let mut h = open_connections(&f, &Connections::default());
+    press(&mut h, "Add connection");
+    // Pick a hosted service from the provider list.
+    h.query_all_by_role_and_label(Role::Button, "OpenAI").next().unwrap().click();
     settle(&mut h);
     h.get_by_label("Connect OpenAI");
     h.get_by_label("Data sent to this connection leaves this computer.");
     assert!(h.query_by_label("Add a provider").is_none());
     press(&mut h, "Back");
-    h.get_by_label("Hosted services");
+    h.get_by_role_and_label(Role::Button, "Connections");
     assert!(h.query_by_label("Connect OpenAI").is_none());
 }
 
 #[test]
 fn saving_a_key_connects_the_service_and_the_list_shows_it() {
-    let f = Features::default();
+    let f = Features::only(&["Generate images"]);
     let c = Connections::default();
-    let mut h = open_with(&f, &c);
-    h.query_all_by_role_and_label(Role::Button, "Connect").next().unwrap().click();
+    let mut h = open_connections(&f, &c);
+    press(&mut h, "Add connection");
+    h.query_all_by_role_and_label(Role::Button, "OpenAI").next().unwrap().click();
     settle(&mut h);
     h.get_by_role(Role::PasswordInput).focus();
     h.get_by_role(Role::PasswordInput).type_text("sk-test-123");
@@ -451,19 +696,21 @@ fn saving_a_key_connects_the_service_and_the_list_shows_it() {
     press(&mut h, "Save");
     assert_eq!(c.0.borrow().saved.len(), 1);
     assert_eq!(c.0.borrow().saved[0].key, "sk-test-123");
-    h.get_by_label("Hosted services");
-    h.get_by_label("Connected");
+    h.get_by_role_and_label(Role::Button, "Connections");
+    h.get_by_label("Key saved");
     h.get_by_role_and_label(Role::Button, "Edit");
-    assert_eq!(f.0.borrow().refreshes, 2, "the tools are read again so the new connection switches them on");
+    assert_eq!(f.0.borrow().refreshes, 2, "the tools are read again so the new connection can be chosen");
+    assert!(f.0.borrow().chosen.is_empty(), "saving a key does not select a model");
 }
 
 #[test]
 fn a_connected_service_can_be_edited_and_removed_after_asking() {
-    let f = Features::default();
+    let f = Features::only(&[]);
     let c = Connections::default();
     c.0.borrow_mut().rows = vec![saved_preset("openai")];
-    let mut h = open_with(&f, &c);
-    h.get_by_label("Connected");
+    let mut h = open_connections(&f, &c);
+    h.get_by_role_and_label(Role::Button, "Connections");
+    h.get_by_label("Key saved");
     press(&mut h, "Edit");
     h.get_by_label("Edit connection");
     h.get_by_role_and_label(Role::Button, "Cancel").click();
@@ -475,8 +722,8 @@ fn a_connected_service_can_be_edited_and_removed_after_asking() {
     h.get_by_role_and_label(Role::Button, "Remove").click();
     settle(&mut h);
     assert_eq!(c.0.borrow().deleted.len(), 1);
-    h.get_by_label("Hosted services");
-    assert!(h.query_by_label("Connected").is_none());
+    h.get_by_role_and_label(Role::Button, "Connections");
+    assert!(h.query_by_label("Key saved").is_none());
 }
 
 #[test]
@@ -484,32 +731,25 @@ fn a_connection_that_is_not_one_of_the_listed_services_is_still_shown() {
     let f = Features::default();
     let c = Connections::default();
     c.0.borrow_mut().rows = vec![saved_preset("openai"), saved_preset("ollama")];
-    let h = open_with(&f, &c);
-    h.get_by_label("Your other connections");
+    let h = open_connections(&f, &c);
+    h.get_by_role_and_label(Role::Button, "Connections");
     h.get_by_label("Ollama");
-    assert_eq!(h.query_all_by_label("OpenAI").count(), 1, "a listed service shows only on its own card");
+    assert!(h.query_all_by_label("OpenAI").count() >= 1, "the saved service remains visible");
 }
 
 #[test]
-fn add_another_server_lives_under_advanced_and_cancel_comes_back() {
+fn add_connection_starts_from_the_connections_section_and_cancel_returns_to_it() {
     let f = Features::default();
-    let mut h = open(&f);
-    assert!(h.query_by_role_and_label(Role::Button, "Add another server").is_none(), "a power-user thing, not on the list");
-    press(&mut h, "Advanced");
-    press(&mut h, "Add another server");
+    let mut h = open_connections(&f, &Connections::default());
+    assert!(h.query_by_role_and_label(Role::Button, "Add connection").is_some());
+    assert!(h.query_by_role_and_label(Role::Button, "OpenAI").is_none());
+    press(&mut h, "Add connection");
     h.get_by_label("Add a provider");
     h.get_by_label("Choose the one you use");
     assert!(h.query_by_role_and_label(Role::Button, "SAM 3 (local)").is_none(), "SAM 3 is a model, not a server address");
     press(&mut h, "Cancel");
-    h.get_by_label("Hosted services");
+    h.get_by_role_and_label(Role::Button, "Connections");
     assert!(h.query_by_label("Add a provider").is_none());
-    // Choosing from that list, then Back, returns to the list of services, not to Set up AI.
-    press(&mut h, "Advanced");
-    press(&mut h, "Add another server");
-    press(&mut h, "Ollama");
-    h.get_by_label("Connect Ollama");
-    press(&mut h, "Back");
-    h.get_by_label("Add a provider");
 }
 
 #[test]
@@ -518,244 +758,33 @@ fn close_closes_the_window_and_opening_again_looks_afresh() {
     let mut h = open(&f);
     h.get_by_label("Close").click();
     settle(&mut h);
-    assert!(h.query_by_label("Hosted services").is_none());
+    assert!(h.query_by_label("AI tools").is_none());
     h.get_by_label("Set up AI").click();
     settle(&mut h);
     assert_eq!(f.0.borrow().scans, 2);
     assert_eq!(f.0.borrow().refreshes, 2);
 }
 
-// ---- Advanced: which model each tool uses ----
-
-fn choice(connection: &str, model: &str, label: &str, local: bool) -> ToolChoice {
-    ToolChoice { connection: ConnectionId::new(connection).unwrap(), model: ModelId::new(model).unwrap(), label: label.into(), local }
-}
-
-fn tool(feature: &str, choices: Vec<ToolChoice>) -> ToolState {
-    ToolState { feature: feature.into(), choices, bound: None, status: ToolStatus::NoChoice, can_test: true, costly: false }
-}
-
-fn ready_tool(feature: &str) -> ToolState {
-    let mut t = tool(feature, vec![choice("openai", "m", "Model, OpenAI", false)]);
-    t.bound = Some((ConnectionId::new("openai").unwrap(), ModelId::new("m").unwrap()));
-    t.status = ToolStatus::Ready { label: "Model, OpenAI".into(), local: false };
-    t
-}
-
-/// Generate images has two models to pick from; nothing else is connected.
-fn with_image_choices(f: &Features) {
-    let mut w = f.0.borrow_mut();
-    w.inventory = bare_comfy();
-    w.tools = vec![tool(
-        "generate-image",
-        vec![choice("openai", "gpt-image-1", "GPT Image 1, OpenAI", false), choice("local", "flux", "Flux, My ComfyUI", true)],
-    )];
-}
-
-fn ready_image_tool(f: &Features) {
-    with_image_choices(f);
-    let mut w = f.0.borrow_mut();
-    let t = &mut w.tools[0];
-    t.bound = Some((ConnectionId::new("openai").unwrap(), ModelId::new("gpt-image-1").unwrap()));
-    t.status = ToolStatus::Ready { label: "GPT Image 1, OpenAI".into(), local: false };
-}
-
-fn open_advanced(f: &Features) -> Harness<'static, State> {
-    let mut h = open(f);
-    press(&mut h, "Advanced");
-    h
-}
-
-/// The model pickers. The launcher's own "Suite order" box is behind the dialog.
-fn pickers<'a>(h: &'a Harness<'_, State>) -> Vec<egui_kittest::Node<'a>> {
-    h.query_all_by_role(Role::ComboBox).filter(|n| n.accesskit_node().value().as_deref() != Some("Suite order")).collect()
-}
-
-fn picker_text(h: &Harness<'_, State>) -> String {
-    pickers(h)[0].accesskit_node().value().map(|v| v.to_string()).unwrap_or_default()
-}
-
-fn pick(h: &mut Harness<'_, State>, label: &str) {
-    pickers(h)[0].click();
-    settle(h);
-    h.get_by_label_contains(label).click();
-    settle(h);
-}
-
-fn asking() -> Sample {
-    Sample::NeedsConsent {
-        feature: "generate-image".into(),
-        connection: "OpenAI".into(),
-        destination: "https://api.openai.com".into(),
-        items: vec!["text".into()],
-        billing: Billing::Metered,
-    }
-}
+#[path = "features/folders.rs"]
+mod folder_tests;
+#[path = "features/tools.rs"]
+mod tools;
 
 #[test]
-fn advanced_lists_only_the_tools_that_have_a_model_and_back_returns() {
-    let f = Features::default();
-    with_image_choices(&f);
-    let mut h = open_advanced(&f);
-    h.get_by_label("Servers, and which model each tool uses");
-    assert_eq!(pickers(&h).len(), 1, "only generate images has anything to choose between");
-    press(&mut h, "Back");
-    h.get_by_label("Hosted services");
-
-    let f = Features::default();
-    let mut h = open_advanced(&f);
-    h.get_by_label("No tool has a connected model yet.");
-    assert!(pickers(&h).is_empty());
-    press(&mut h, "Back");
-}
-
-#[test]
-fn picking_a_model_binds_the_tool() {
-    let f = Features::default();
-    with_image_choices(&f);
-    let mut h = open_advanced(&f);
-    assert_eq!(picker_text(&h), "Choose a model");
-    pick(&mut h, "GPT Image 1, OpenAI");
-    assert_eq!(
-        f.0.borrow().chosen,
-        [("generate-image".to_owned(), Some((ConnectionId::new("openai").unwrap(), ModelId::new("gpt-image-1").unwrap())))]
-    );
-    h.get_by_label("Ready. Sends to a hosted service.");
-}
-
-#[test]
-fn a_local_model_is_marked_as_staying_on_this_computer() {
-    let f = Features::default();
-    with_image_choices(&f);
-    {
-        let mut w = f.0.borrow_mut();
-        let t = &mut w.tools[0];
-        t.bound = Some((ConnectionId::new("local").unwrap(), ModelId::new("flux").unwrap()));
-        t.status = ToolStatus::Ready { label: "Flux, My ComfyUI".into(), local: true };
-    }
-    let mut h = open_advanced(&f);
-    h.get_by_label("Ready. Runs on this computer.");
-    pickers(&h)[0].click();
+fn sam21_shows_publisher_terms_and_never_gates_the_model_on_them() {
+    let f = Features::only(&["Select subject"]);
+    f.0.borrow_mut().inventory = with_sam21();
+    let mut h = open_models(&f);
+    // Folded until asked for, and the model can already be used: disclosure is not a gate.
+    assert!(h.query_by_label("Florence-2-large detector").is_none());
+    h.get_by_label("Licences of what this uses").click();
     settle(&mut h);
-    h.get_by_label_contains("(this computer)");
-}
-
-#[test]
-fn a_refusal_from_the_shell_is_shown_and_nothing_changes() {
-    let f = Features::default();
-    with_image_choices(&f);
-    f.0.borrow_mut().choose_refused = Some("That model cannot do this job.".into());
-    let mut h = open_advanced(&f);
-    pick(&mut h, "GPT Image 1, OpenAI");
-    assert!(f.0.borrow().chosen.is_empty());
-    h.get_by_label_contains("That model cannot do this job.");
-}
-
-#[test]
-fn a_choice_that_stopped_working_says_why_and_automatic_takes_the_best_again() {
-    let f = Features::default();
-    with_image_choices(&f);
-    {
-        let mut w = f.0.borrow_mut();
-        let t = &mut w.tools[0];
-        t.bound = Some((ConnectionId::new("gone").unwrap(), ModelId::new("gpt-image-1").unwrap()));
-        t.status = ToolStatus::Unavailable("Connection OpenAI is switched off.".into());
-    }
-    let mut h = open_advanced(&f);
-    assert_eq!(picker_text(&h), "Chosen model unavailable");
-    h.get_by_label("Connection OpenAI is switched off.");
-    assert!(h.get_by_label("Test it").accesskit_node().is_disabled(), "no test of a model that cannot run");
-    pickers(&h)[0].click();
-    settle(&mut h);
-    h.get_by_label("Automatic (best available)").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().chosen, [("generate-image".to_owned(), None)]);
-}
-
-#[test]
-fn test_it_is_off_until_a_working_model_is_chosen() {
-    let f = Features::default();
-    with_image_choices(&f);
-    let h = open_advanced(&f);
-    assert!(h.get_by_label("Test it").accesskit_node().is_disabled());
-}
-
-#[test]
-fn test_it_runs_the_sample_and_shows_that_it_worked() {
-    let f = Features::default();
-    ready_image_tool(&f);
-    let mut h = open_advanced(&f);
-    h.get_by_label("Test it").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().tests, [("generate-image".to_owned(), false)]);
-    h.get_by_label("Testing…");
-    f.0.borrow_mut().sample = Sample::Passed { feature: "generate-image".into(), summary: "Returned 1 image result(s)".into(), millis: 1_250 };
-    settle(&mut h);
-    h.get_by_label("Works. Returned 1 image result(s), in 1.3 s.");
-    h.get_by_label("Done").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().dismissals, 1);
-    h.get_by_label("Test it");
-}
-
-#[test]
-fn a_failed_test_says_why_and_can_be_tried_again() {
-    let f = Features::default();
-    ready_image_tool(&f);
-    f.0.borrow_mut().sample = Sample::Failed { feature: "generate-image".into(), message: "the service said no".into() };
-    let mut h = open_advanced(&f);
-    h.get_by_label("The test failed: the service said no");
-    h.get_by_label("Try again").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().tests, [("generate-image".to_owned(), false)]);
-}
-
-#[test]
-fn a_hosted_test_asks_first_and_names_where_it_goes_and_what_it_costs() {
-    let f = Features::default();
-    ready_image_tool(&f);
-    f.0.borrow_mut().sample = asking();
-    let mut h = open_advanced(&f);
-    h.get_by_label("This sends a small sample (text) to https://api.openai.com through OpenAI. You are billed for it by the service.");
-    assert!(f.0.borrow().tests.is_empty(), "nothing was sent by looking at the question");
-    h.get_by_label("Cancel").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().dismissals, 1);
-    assert!(f.0.borrow().tests.is_empty());
-    // Asked again, agreeing sends it.
-    f.0.borrow_mut().sample = asking();
-    settle(&mut h);
-    h.get_by_label("Send the test").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().tests, [("generate-image".to_owned(), true)]);
-}
-
-#[test]
-fn a_running_test_can_be_cancelled() {
-    let f = Features::default();
-    ready_image_tool(&f);
-    f.0.borrow_mut().sample = Sample::Running { feature: "generate-image".into() };
-    let mut h = open_advanced(&f);
-    h.get_by_label("Testing…");
-    h.get_by_label("Cancel").click();
-    settle(&mut h);
-    assert_eq!(f.0.borrow().test_cancels, 1);
-}
-
-#[test]
-fn a_sample_for_one_tool_does_not_show_on_another() {
-    let f = Features::default();
-    ready_image_tool(&f);
-    {
-        let mut w = f.0.borrow_mut();
-        let mut video = tool("generate-video", vec![choice("openai", "sora", "Sora, OpenAI", false)]);
-        video.bound = Some((ConnectionId::new("openai").unwrap(), ModelId::new("sora").unwrap()));
-        video.status = ToolStatus::Ready { label: "Sora".into(), local: false };
-        video.costly = true;
-        w.tools.push(video);
-        w.sample = Sample::Passed { feature: "generate-image".into(), summary: "Returned 1 image result(s)".into(), millis: 900 };
-    }
-    let h = open_advanced(&f);
-    assert_eq!(h.query_all_by_label_contains("Works.").count(), 1, "only under its own tool");
-    h.get_by_label("A hosted video sample can cost noticeably more than an image");
+    h.get_by_label("Florence-2-large detector");
+    h.get_by_label("SAM 2.1 checkpoint");
+    assert_eq!(h.query_all_by_label("Where the publisher says so").count(), 4);
+    h.get_by_label_contains("gives no warranty or indemnity");
+    h.get_by_label_contains("You can run another Florence-2 variant in ComfyUI yourself");
+    h.get_by_label_contains("downloads it from Hugging Face by itself");
+    assert!(h.query_by_label("I have read the licence and accept it").is_none());
+    h.get_by_role_and_label(Role::Button, "Check and use model");
 }

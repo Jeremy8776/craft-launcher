@@ -11,9 +11,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use artcraft_launcher_ui_egui::features::{Sample, ToolChoice, ToolState, ToolStatus, bytes};
-use craft_ai_client::{Job, RoleStatus, SampleReport, TestStart, ToolDesk};
+use craft_ai_client::{Job, LocalEnabled, RoleStatus, SampleReport, TestStart, ToolDesk};
+use craft_ai_comfyui::{Sam3Canceller, Sam21Canceller};
 use craft_ai_features::{Feature, sample_is_costly, sample_request};
-use craft_ai_model::{ConnectionId, Locality, ModelId, PayloadKind};
+use craft_ai_model::{ConnectionId, InputRole, Locality, ModelId, Payload, PayloadKind, Request};
+
+#[path = "features_sam21_sample.rs"]
+mod sam21_sample;
+#[path = "features_sam3_sample.rs"]
+mod sam3_sample;
 
 /// How long a sample may take before it is given up on. Video is slow.
 const IMAGE_WAIT: Duration = Duration::from_secs(180);
@@ -26,6 +32,8 @@ struct State {
     /// Bumped whenever the sample is started, cancelled or dismissed.
     generation: u64,
     job: Option<Arc<Job>>,
+    sam3_cancel: Option<Sam3Canceller>,
+    sam21_cancel: Option<Sam21Canceller>,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -58,9 +66,7 @@ impl Tools {
         let Some(desk) = self.desk.clone() else { return };
         let (state, features) = (Arc::clone(&self.state), features.to_vec());
         std::thread::spawn(move || {
-            // Whatever was just connected switches its tools on, but never over a choice made.
-            let roles: Vec<_> = features.iter().filter_map(Feature::role).collect();
-            let _ = desk.auto_bind(&roles);
+            // Refreshing connections only offers choices. The person chooses what every app uses.
             let tools = compute(&desk, &features);
             lock(&state).tools = tools;
         });
@@ -82,6 +88,13 @@ impl Tools {
         Ok(())
     }
 
+    pub(crate) fn enable_local_recipe(&self, features: &[Feature], feature: &Feature, recipe: &str) -> Result<LocalEnabled, String> {
+        let desk = self.desk.as_ref().ok_or_else(|| self.problem.clone().unwrap_or_default())?;
+        let enabled = desk.enable_local_recipe(feature, recipe, "http://127.0.0.1:8000").map_err(|e| e.message)?;
+        lock(&self.state).tools = compute(desk, features);
+        Ok(enabled)
+    }
+
     pub(crate) fn test(&self, features: &[Feature], feature: &str, agreed: bool) {
         let Some(desk) = self.desk.clone() else {
             lock(&self.state).sample = Sample::Failed { feature: feature.to_owned(), message: self.problem.clone().unwrap_or_default() };
@@ -96,6 +109,8 @@ impl Tools {
             guard.generation += 1;
             guard.sample = Sample::Running { feature: feature.to_owned() };
             guard.job = None;
+            guard.sam3_cancel = None;
+            guard.sam21_cancel = None;
             guard.generation
         };
         let state = Arc::clone(&self.state);
@@ -105,6 +120,8 @@ impl Tools {
             if guard.generation == generation {
                 guard.sample = outcome;
                 guard.job = None;
+                guard.sam3_cancel = None;
+                guard.sam21_cancel = None;
             }
         });
     }
@@ -115,6 +132,12 @@ impl Tools {
         if let Some(job) = guard.job.take() {
             // Best effort: the job may already be finished.
             let _ = job.cancel();
+        }
+        if let Some(cancel) = guard.sam3_cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(cancel) = guard.sam21_cancel.take() {
+            cancel.cancel();
         }
         guard.sample = Sample::Idle;
     }
@@ -133,6 +156,52 @@ fn run(desk: &ToolDesk, feature: &Feature, agreed: bool, state: &Mutex<State>, g
     let (Some(role), Some(request)) = (feature.role(), sample_request(feature)) else {
         return failed("There is no test for this tool yet.".to_owned());
     };
+    if feature.id == "select-subject" {
+        let photo = sam3_sample::photo();
+        let source = match Payload::inline("image/png", photo.to_vec()) {
+            Ok(source) => source,
+            Err(error) => return failed(error.message),
+        };
+        let sample =
+            Request::new(feature.capability.clone()).with_input(InputRole::Source, source).with_input(InputRole::Prompt, Payload::text("person"));
+        match desk.local_subject_sample(&role, sample) {
+            Ok(Some((model, endpoint))) => {
+                let result = match model.as_str() {
+                    "sam3-segment" => {
+                        let register = |cancel: Sam3Canceller| {
+                            let mut guard = lock(state);
+                            if guard.generation != generation {
+                                cancel.cancel();
+                                return Err("SAM 3 request cancelled".to_owned());
+                            }
+                            guard.sam3_cancel = Some(cancel);
+                            Ok(())
+                        };
+                        sam3_sample::run(&endpoint, photo, register, || lock(state).generation == generation)
+                    }
+                    "sam21-segment" => {
+                        let register = |cancel: Sam21Canceller| {
+                            let mut guard = lock(state);
+                            if guard.generation != generation {
+                                cancel.cancel();
+                                return Err("SAM 2.1 request cancelled".to_owned());
+                            }
+                            guard.sam21_cancel = Some(cancel);
+                            Ok(())
+                        };
+                        sam21_sample::run(&endpoint, sam21_sample::photo(), register, || lock(state).generation == generation)
+                    }
+                    _ => return failed(format!("The selected subject model is not supported: {model}")),
+                };
+                return match result {
+                    Ok((summary, millis)) => Sample::Passed { feature: feature.id.clone(), summary, millis },
+                    Err(message) => failed(message),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => return failed(error.message),
+        }
+    }
     match desk.start_test(&role, request, agreed) {
         Err(error) => failed(error.message),
         Ok(TestStart::NeedsConsent { disclosure, connection_label, billing }) => Sample::NeedsConsent {
@@ -193,6 +262,7 @@ pub(crate) fn compute(desk: &ToolDesk, features: &[Feature]) -> Vec<ToolState> {
                 .map(|c| ToolChoice {
                     connection: c.connection.clone(),
                     model: c.model.clone(),
+                    provider: c.provider.clone(),
                     label: format!("{}, {}", c.model_label, c.connection_label),
                     local: c.locality == Locality::Local,
                 })

@@ -401,6 +401,9 @@ filter	Installed	Instalados
 	Servers, and which model each tool uses	Servidores e o modelo de cada ferramenta
 	Set up	Configurar
 	Set up AI	Configurar a IA
+	Configure	Configurar
+	See which Craft apps use each AI tool and set its model.	Veja quais ferramentas de IA os apps Craft usam e escolha o modelo de cada uma.
+	Tools	Ferramentas
 	Set up one or more of these and the AI tools switch on in every Craft app that has them.	Configure um ou mais destes e as ferramentas de IA são ativadas em cada app Craft que as tem.
 	Set up the AI tools for every Craft app	Configurar as ferramentas de IA para cada app Craft
 	Set up {name}	Configurar {name}
@@ -431,6 +434,10 @@ filter	Installed	Instalados
 	{file}, {size}, from {host}	{file}, {size}, de {host}
 	{model} (this computer)	{model} (este computador)
 	Files in place	Arquivos no lugar
+	Check and use model	Verificar e usar o modelo
+	Checking model files...	Verificando os arquivos do modelo...
+	Files checked. Model added for this tool.	Arquivos verificados. Modelo adicionado para esta ferramenta.
+	Files checked. Earlier model choice kept.	Arquivos verificados. A escolha anterior de modelo foi mantida.
 	Planned for	Planejado para
 	Model files installed. The app tool is not connected yet.	Arquivos do modelo instalados. A ferramenta no app ainda não está conectada.
 # History page.
@@ -483,3 +490,77 @@ filter	Installed	Instalados
 	By model	Por modelo
 	By app	Por app
 	Average	Média
+
+	Runs on this computer	Executa neste computador
+	No models found yet	Nenhum modelo encontrado ainda
+@plural	{n} model|{n} models	{n} modelo|{n} modelos
+
+# Capability-first AI setup and tool descriptions
+	AI tools	Ferramentas de IA
+	ArtCraft Launcher cannot use this option yet.	O ArtCraft Launcher ainda não pode usar esta opção.
+	Available in {app}: {tool}	Disponível em {app}: {tool}
+	Choose the model each AI tool uses, then check that it works.	Escolha o modelo para cada ferramenta de IA e verifique se funciona.
+	Connect a service	Conectar um serviço
+	Connect another service	Conectar outro serviço
+	Planned for {app}: {tool}	Planejado para {app}: {tool}
+	Suggested for {app}: {tool}	Sugerido para {app}: {tool}
+	The local service for these files was not found.	O serviço local necessário para estes arquivos não foi encontrado.
+	Add a folder	Adicionar uma pasta
+	Checking model folders...	Verificando pastas de modelos...
+	Choose where new model files should go. Existing files stay where they are.	Escolha onde salvar novos arquivos de modelo. Os arquivos existentes continuam onde estão.
+	Default folder changed.	A pasta padrão foi alterada.
+	Default for new downloads	Pasta padrão para novos downloads
+	Folder added.	A pasta foi adicionada.
+	Folder checked again.	A pasta foi verificada novamente.
+	Folder removed from the list. Its files were not deleted.	A pasta foi removida da lista. Os arquivos não foram excluídos.
+	Folders	Pastas
+	Installed. The files are ready to test.	Instalado. Os arquivos estão prontos para testar.
+	Make default	Definir como padrão
+	No folders yet. Add one to choose where model files are saved.	Ainda não há pastas. Adicione uma para escolher onde os arquivos de modelo serão salvos.
+	Read-only	Somente leitura
+	Rescan	Verificar novamente
+	That folder could not be changed. Check that it is available, then try again.	Não foi possível alterar essa pasta. Verifique se ela está disponível e tente novamente.
+	Updating folders...	Atualizando pastas...
+	Choose a folder for model files	Escolha uma pasta para os arquivos de modelo
+	This model cannot be used by a Craft app yet.	Um aplicativo Craft ainda não pode usar este modelo.
+	Select subject	Selecionar assunto
+	Remove background	Remover fundo
+	Remove objects	Remover objetos
+	Generative fill	Preenchimento generativo
+	Generative expand	Expansão generativa
+	Extend sequence	Estender sequência
+	Generate images	Gerar imagens
+	Generate video	Gerar vídeo
+	Pick out the main subject, or anything you describe in words, and turn it into a selection or a mask.	Selecione o assunto principal ou algo descrito em palavras e transforme em uma seleção ou máscara.
+	Cut the subject out and leave the background transparent.	Recorte o assunto e deixe o fundo transparente.
+	Mark something and the area fills in to match its surroundings.	Marque algo para preencher a área de acordo com o que está ao redor.
+	Select an area, describe what should be there, and get new content that blends in.	Selecione uma área, descreva o que deve aparecer e gere conteúdo que se integre à imagem.
+	Make the canvas bigger and fill the new area to match the picture.	Aumente a tela e preencha a nova área para combinar com a imagem.
+	Add frames to the end of a clip so the shot carries on.	Adicione quadros ao final de um clipe para continuar a cena.
+	Make a picture from a description.	Crie uma imagem a partir de uma descrição.
+	Make a clip from a description.	Crie um clipe a partir de uma descrição.
+	Select Subject and Object Selection	Seleção do assunto e de objetos
+	Subject, sky and people masks	Máscaras de assunto, céu e pessoas
+	Roto and matte	Rotoscopia e máscara
+	Remove Background	Remover fundo
+	Remove tool	Ferramenta de remoção
+	Generative remove	Remoção generativa
+	Generative Fill	Preenchimento generativo
+	Generative Expand	Expansão generativa
+	Generative video	Vídeo generativo
+	Generate Image	Gerar imagem
+	Image generation	Geração de imagens
+	Slide images	Imagens para slides
+	Run with	Executar com
+	Inside this app	Dentro deste aplicativo
+	This model is not available with every option.	Este modelo não está disponível em todas as opções.
+
+# Runtime settings in Advanced.
+	Engines	Mecanismos
+	Choose where a local model runs. Options that cannot use it are unavailable.	Escolha onde um modelo local será executado. Opções incompatíveis ficam indisponíveis.
+	Choose a local model to set where it runs.	Escolha um modelo local para definir onde ele será executado.
+	Setup only	Somente configuração
+	Models marked Setup only can be installed, but no Craft app can use them yet.	Modelos marcados como “Somente configuração” podem ser instalados, mas nenhum aplicativo Craft pode usá-los ainda.
+	Licences of what this uses	Licenças do que isto usa
+	Where the publisher says so	Onde o editor informa isso
+	This is what each publisher says about its terms. ArtCraft has not checked it, it is not legal advice, and ArtCraft gives no warranty or indemnity for any model, add-on or result. Whether it suits your use, including commercial use, is your decision.	Isto é o que cada editor diz sobre seus termos. O ArtCraft não verificou, não é aconselhamento jurídico, e o ArtCraft não dá garantia nem indenização por nenhum modelo, extensão ou resultado. Cabe a você decidir se serve para o seu uso, inclusive comercial.

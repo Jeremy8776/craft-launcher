@@ -11,20 +11,24 @@ use crate::theme::Tokens;
 use crate::widgets::{self, Kind};
 
 impl FeaturesUi {
-    pub(super) fn setup(&mut self, ui: &mut Ui, id: &str, snapshot: &Snapshot, port: &mut dyn FeaturesPort) -> Outcome {
+    pub(super) fn setup(&mut self, ui: &mut Ui, id: &str, recipe_id: &str, snapshot: &Snapshot, port: &mut dyn FeaturesPort) -> Outcome {
         let t = Tokens::get(ui.ctx());
         let Some(feature) = self.features.iter().find(|f| f.id == id).cloned() else {
             self.back();
             return Outcome::None;
         };
-        let plan = self.plan_for(snapshot, id).cloned();
+        let Some(recipe) = feature.locals.iter().find(|r| r.workflow == recipe_id) else {
+            self.back();
+            return Outcome::None;
+        };
+        let plan = self.plan_for_recipe(snapshot, id, recipe_id).cloned();
         let running = match &snapshot.install {
-            Install::Running { feature, .. } => feature == id,
+            Install::Running { feature, recipe, .. } => feature == id && recipe == recipe_id,
             _ => false,
         };
         crate::connections::title(
             ui,
-            &fmt(tl!("Set up {name}"), &[("name", crate::i18n::t(&feature.title))]),
+            &fmt(tl!("Set up {name}"), &[("name", crate::i18n::t(&recipe.label))]),
             tl!("Runs on this computer through ComfyUI"),
         );
 
@@ -36,16 +40,18 @@ impl FeaturesUi {
             }
         }
         match &snapshot.install {
-            Install::Failed { feature: f, message } if f == id => {
+            Install::Failed { feature: f, recipe, message } if f == id && recipe == recipe_id => {
                 ui.add_space(8.0);
                 ui.add(egui::Label::new(RichText::new(fmt(tl!("The download failed: {e}"), &[("e", message)])).color(t.bad)).wrap());
             }
-            Install::Done { feature: f } if f == id && plan.as_ref().is_some_and(|p| p.state == State::Ready) => {
+            Install::Done { feature: f, recipe: completed }
+                if f == id && completed == recipe_id && plan.as_ref().is_some_and(|p| p.state == State::Ready) =>
+            {
                 ui.add_space(8.0);
-                let ready = feature.local.as_ref().is_some_and(|r| r.usable);
+                let ready = recipe.usable;
                 ui.label(
                     RichText::new(if ready {
-                        tl!("Installed. This tool is ready on this computer.")
+                        tl!("Installed. The files are ready to test.")
                     } else {
                         tl!("Model files installed. The app tool is not connected yet.")
                     })
@@ -83,7 +89,7 @@ impl FeaturesUi {
                 };
                 ui.add_enabled_ui(ready_to_start, |ui| {
                     if widgets::button(ui, &label, Kind::Primary, 0.0).clicked() {
-                        self.start_install(id, port);
+                        self.start_install(id, recipe_id, port);
                     }
                 });
             }
@@ -155,7 +161,13 @@ impl FeaturesUi {
             ui.add_space(4.0);
             ui.checkbox(&mut self.accepted, tl!("I have read the licence and accept it"));
         }
-        let _ = feature;
+        if let Some(recipe) = feature.locals.iter().find(|recipe| recipe.workflow == plan.recipe) {
+            if !recipe.components.is_empty() {
+                ui.add_space(10.0);
+                widgets::hud(ui, tl!("Licences of what this uses"), t.faint);
+            }
+            super::licences::show(ui, recipe);
+        }
     }
 
     fn progress(&self, ui: &mut Ui, install: &Install) {

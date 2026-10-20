@@ -7,6 +7,7 @@
 
 mod connections;
 mod features;
+mod features_folders;
 mod features_tools;
 mod history_port;
 #[cfg(test)]

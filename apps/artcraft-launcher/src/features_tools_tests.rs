@@ -23,6 +23,9 @@ use craft_ai_comfy_env::DownloadConfig;
 use super::Tools;
 use crate::features::DesktopFeatures;
 
+#[path = "../../../../craft-ai-wt-setup-completion/crates/ai-openai/tests/support/mod.rs"]
+mod sam3_support;
+
 /// Answers by its connection's name: `good-…` returns a picture, `empty-…` nothing, `slow-…` stays
 /// running until `release` is set.
 struct Fake {
@@ -144,11 +147,12 @@ fn ready_world(connection_name: &str, remote: bool) -> (World, Snapshot) {
 fn the_tools_list_only_models_that_can_do_each_job() {
     let mut w = world(vec![connection("good-local", false, &["gpt-image-1", "gpt-4o"])]);
     w.port.refresh_tools();
-    let snap = until(&mut w.port, "the tools", |s| s.tools.len() == 7);
+    let snap = until(&mut w.port, "the tools", |s| !s.tools.is_empty());
     let image = tool(&snap, "generate-image");
     assert_eq!(image.choices.len(), 1);
     assert!(image.choices[0].local);
-    assert!(matches!(image.status, ToolStatus::Ready { local: true, .. }), "a connected model switches its tool on by itself");
+    assert_eq!(image.bound, None, "a connected model is offered but does not silently become the suite choice");
+    assert_eq!(image.status, ToolStatus::NoChoice);
     assert!(image.can_test && !image.costly);
     assert!(tool(&snap, "generate-video").costly);
     assert!(tool(&snap, "generative-expand").choices.is_empty());
@@ -166,20 +170,22 @@ fn choosing_makes_the_tool_ready_and_automatic_takes_the_best_again() {
 }
 
 #[test]
-fn a_connection_added_later_switches_its_tools_on_at_the_next_look() {
+fn a_connection_added_later_is_available_but_not_chosen_until_the_person_picks() {
     let mut w = world(vec![]);
     w.port.refresh_tools();
-    let snap = until(&mut w.port, "the tools", |s| s.tools.len() == 7);
+    let snap = until(&mut w.port, "the tools", |s| !s.tools.is_empty());
     assert_eq!(tool(&snap, "generate-image").status, ToolStatus::NoChoice);
     // The person connects something in the launcher, then the screen looks again.
     let desk_path = w._dir.path().join("connections.json");
     let shared = SharedStore::new(desk_path);
     shared.update(|s| s.connections.push(connection("good-local", false, &["gpt-image-1"]))).unwrap();
     w.port.refresh_tools();
-    let snap = until(&mut w.port, "the tool to switch on", |s| {
-        s.tools.iter().any(|t| t.feature == "generate-image" && matches!(t.status, ToolStatus::Ready { .. }))
+    let snap = until(&mut w.port, "the connection to appear as a choice", |s| {
+        s.tools.iter().any(|t| t.feature == "generate-image" && !t.choices.is_empty())
     });
-    assert!(tool(&snap, "generate-image").bound.is_some());
+    let image = tool(&snap, "generate-image");
+    assert_eq!(image.status, ToolStatus::NoChoice);
+    assert_eq!(image.bound, None, "refreshing connections never writes a suite default");
 }
 
 #[test]
@@ -204,6 +210,193 @@ fn a_local_sample_runs_and_reports_success() {
     }
     w.port.dismiss_test();
     assert_eq!(w.port.snapshot().sample, Sample::Idle);
+}
+
+#[test]
+fn selected_sam3_sample_runs_without_an_imported_workflow() {
+    use sam3_support::{Reply, Server};
+    let mask = image::GrayImage::from_pixel(512, 512, image::Luma([255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(mask).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let mask = png.into_inner();
+    let server = Server::start(move |r| match r.path.as_str() {
+        "/system_stats" => Reply::Json(200, json!({"system":{"comfyui_version":"0.22.3"}}).to_string()),
+        "/object_info" => Reply::Json(
+            200,
+            json!({
+                "LoadImage":{},"LoadSAM3Model":{},"SAM3InteractiveCollector":{},
+                "SAM3Grounding":{},"MaskToImage":{},"SaveImage":{}
+            })
+            .to_string(),
+        ),
+        "/upload/image" => Reply::Json(200, json!({"name":"source.png","type":"input","subfolder":""}).to_string()),
+        "/prompt" => Reply::Json(200, json!({"prompt_id":"abc-123"}).to_string()),
+        "/history/abc-123" => Reply::Json(
+            200,
+            json!({"abc-123":{"status":{"completed":true},"outputs":{"5":{"images":[{"filename":"mask.png","type":"output","subfolder":""}]}}}})
+                .to_string(),
+        ),
+        "/view?filename=mask.png&type=output" => sam3_support::http_bytes(200, &[("Content-Type", "image/png")], &mask),
+        _ => Reply::Json(404, "{}".into()),
+    });
+    let mut w = world(vec![]);
+    let shared = SharedStore::new(w._dir.path().join("connections.json"));
+    let client = AiClient::new(ToolDesk::app().unwrap(), shared.clone(), Arc::new(MemoryStore::new()));
+    let desk = ToolDesk::new(client, shared, None);
+    let feature = craft_ai_features::builtin().into_iter().find(|f| f.id == "select-subject").unwrap();
+    desk.enable_local(&feature, server.url.trim_end_matches("/v1")).unwrap();
+    w.port = DesktopFeatures::with(vec![feature], Arc::new(|| None), DownloadConfig::default(), Tools::new(Ok(desk)));
+    w.port.test("select-subject", false);
+    let snap = until(&mut w.port, "the SAM 3 sample", |s| matches!(s.sample, Sample::Passed { .. } | Sample::Failed { .. }));
+    assert!(matches!(snap.sample, Sample::Passed { .. }), "{:?}", snap.sample);
+    let requests = server.recorded();
+    assert!(requests.iter().any(|r| r.path == "/upload/image"));
+    assert!(requests.iter().any(|r| r.path == "/prompt" && r.body_text().contains("person")));
+}
+
+#[test]
+fn selected_sam21_sample_uses_the_installed_session_without_workflow() {
+    use sam3_support::{Reply, Server};
+    let mask = image::GrayImage::from_pixel(512, 512, image::Luma([255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(mask).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let mask = png.into_inner();
+    let server = Server::start(move |r| {
+        match r.path.as_str() {
+        "/system_stats" => Reply::Json(200, json!({"system":{"comfyui_version":"0.22.3"}}).to_string()),
+        "/object_info" => Reply::Json(200, json!({"LoadImage":{},"Florence2ModelLoader":{"input":{"required":{"model":[["Florence-2-large"],{}]}}},"Florence2Run":{},"Florence2toCoordinates":{},"DownloadAndLoadSAM2Model":{},"Sam2Segmentation":{},"MaskToImage":{},"SaveImage":{}}).to_string()),
+        "/upload/image" => Reply::Json(200, json!({"name":"source.png","type":"input","subfolder":""}).to_string()),
+        "/prompt" => Reply::Json(200, json!({"prompt_id":"sam21-123"}).to_string()),
+        "/history/sam21-123" => Reply::Json(200, json!({"sam21-123":{"status":{"completed":true},"outputs":{"8":{"images":[{"filename":"mask.png","type":"output","subfolder":""}]}}}}).to_string()),
+        "/view?filename=mask.png&type=output" => sam3_support::http_bytes(200, &[("Content-Type", "image/png")], &mask),
+        _ => Reply::Json(404, "{}".into()),
+    }
+    });
+    let mut w = world(vec![]);
+    let shared = SharedStore::new(w._dir.path().join("connections.json"));
+    let client = AiClient::new(ToolDesk::app().unwrap(), shared.clone(), Arc::new(MemoryStore::new()));
+    let desk = ToolDesk::new(client, shared, None);
+    let mut feature = craft_ai_features::builtin().into_iter().find(|f| f.id == "select-subject").unwrap();
+    feature.locals.iter_mut().find(|r| r.workflow == "sam21-segment").unwrap().usable = true;
+    desk.enable_local_recipe(&feature, "sam21-segment", server.url.trim_end_matches("/v1")).unwrap();
+    w.port = DesktopFeatures::with(vec![feature], Arc::new(|| None), DownloadConfig::default(), Tools::new(Ok(desk)));
+    w.port.test("select-subject", false);
+    let snap = until(&mut w.port, "the SAM 2.1 sample", |s| matches!(s.sample, Sample::Passed { .. } | Sample::Failed { .. }));
+    assert!(matches!(snap.sample, Sample::Passed { .. }), "{:?}", snap.sample);
+    let requests = server.recorded();
+    let prompt = requests.iter().find(|r| r.path == "/prompt").expect("SAM 2.1 prompt").body_json();
+    assert_eq!(prompt["prompt"]["5"]["class_type"], "DownloadAndLoadSAM2Model");
+    assert_eq!(prompt["prompt"]["5"]["inputs"]["model"], "sam2.1_hiera_large.safetensors");
+    assert_eq!(prompt["prompt"]["2"]["class_type"], "Florence2ModelLoader");
+    assert!(!prompt.to_string().contains("SAM3Grounding"));
+}
+
+#[test]
+fn selected_sam3_sample_rejects_a_non_ipv4_loopback_endpoint_before_uploading() {
+    use sam3_support::{Reply, Server};
+    let server = Server::start(|_| Reply::Json(200, "{}".to_owned()));
+    let endpoint = server.url.trim_end_matches("/v1").replacen("127.0.0.1", "localhost", 1);
+    let error = super::sam3_sample::run(&endpoint, super::sam3_sample::photo(), |_| Ok(()), || true).unwrap_err();
+    assert!(error.contains("IPv4 loopback"), "{error}");
+    assert!(server.recorded().is_empty(), "a sample must not be uploaded to an unapproved address");
+}
+
+#[test]
+fn cancelling_selected_sam3_test_removes_its_queued_prompt() {
+    use sam3_support::{Reply, Server};
+    let server = Server::start(|r| match r.path.as_str() {
+        "/system_stats" => Reply::Json(200, json!({"system":{"comfyui_version":"0.22.3"}}).to_string()),
+        "/object_info" => Reply::Json(
+            200,
+            json!({
+                "LoadImage":{},"LoadSAM3Model":{},"SAM3InteractiveCollector":{},
+                "SAM3Grounding":{},"MaskToImage":{},"SaveImage":{}
+            })
+            .to_string(),
+        ),
+        "/upload/image" => Reply::Json(200, json!({"name":"source.png","type":"input","subfolder":""}).to_string()),
+        "/prompt" => Reply::Json(200, json!({"prompt_id":"abc-123"}).to_string()),
+        "/history/abc-123" => Reply::Json(200, "{}".to_owned()),
+        "/queue" => Reply::Json(200, "{}".to_owned()),
+        _ => Reply::Json(404, "{}".to_owned()),
+    });
+    let mut w = world(vec![]);
+    let shared = SharedStore::new(w._dir.path().join("connections.json"));
+    let client = AiClient::new(ToolDesk::app().unwrap(), shared.clone(), Arc::new(MemoryStore::new()));
+    let desk = ToolDesk::new(client, shared, None);
+    let feature = craft_ai_features::builtin().into_iter().find(|f| f.id == "select-subject").unwrap();
+    desk.enable_local(&feature, server.url.trim_end_matches("/v1")).unwrap();
+    w.port = DesktopFeatures::with(vec![feature], Arc::new(|| None), DownloadConfig::default(), Tools::new(Ok(desk)));
+    w.port.test("select-subject", false);
+    until(&mut w.port, "SAM 3 queue to start", |_| server.recorded().iter().any(|r| r.path == "/history/abc-123"));
+    w.port.cancel_test();
+    assert_eq!(w.port.snapshot().sample, Sample::Idle);
+    until(&mut w.port, "SAM 3 queue to be cancelled", |_| server.recorded().iter().any(|r| r.path == "/queue"));
+    let queue = server.recorded().into_iter().find(|r| r.path == "/queue").unwrap();
+    assert_eq!(queue.body_json(), json!({"delete":["abc-123"]}));
+}
+
+#[test]
+fn cancelling_selected_sam21_test_removes_its_queued_prompt() {
+    use sam3_support::{Reply, Server};
+    let server = Server::start(|r| {
+        match r.path.as_str() {
+        "/system_stats" => Reply::Json(200, json!({"system":{"comfyui_version":"0.22.3"}}).to_string()),
+        "/object_info" => Reply::Json(200, json!({"LoadImage":{},"Florence2ModelLoader":{"input":{"required":{"model":[["Florence-2-large"],{}]}}},"Florence2Run":{},"Florence2toCoordinates":{},"DownloadAndLoadSAM2Model":{},"Sam2Segmentation":{},"MaskToImage":{},"SaveImage":{}}).to_string()),
+        "/upload/image" => Reply::Json(200, json!({"name":"source.png","type":"input","subfolder":""}).to_string()),
+        "/prompt" => Reply::Json(200, json!({"prompt_id":"sam21-cancel"}).to_string()),
+        "/history/sam21-cancel" => Reply::Json(200, "{}".to_owned()),
+        "/queue" => Reply::Json(200, "{}".to_owned()),
+        _ => Reply::Json(404, "{}".to_owned()),
+    }
+    });
+    let mut w = world(vec![]);
+    let shared = SharedStore::new(w._dir.path().join("connections.json"));
+    let client = AiClient::new(ToolDesk::app().unwrap(), shared.clone(), Arc::new(MemoryStore::new()));
+    let desk = ToolDesk::new(client, shared, None);
+    let mut feature = craft_ai_features::builtin().into_iter().find(|f| f.id == "select-subject").unwrap();
+    feature.locals.iter_mut().find(|r| r.workflow == "sam21-segment").unwrap().usable = true;
+    desk.enable_local_recipe(&feature, "sam21-segment", server.url.trim_end_matches("/v1")).unwrap();
+    w.port = DesktopFeatures::with(vec![feature], Arc::new(|| None), DownloadConfig::default(), Tools::new(Ok(desk)));
+    w.port.test("select-subject", false);
+    until(&mut w.port, "SAM 2.1 queue to start", |_| server.recorded().iter().any(|r| r.path == "/history/sam21-cancel"));
+    w.port.cancel_test();
+    assert_eq!(w.port.snapshot().sample, Sample::Idle);
+    until(&mut w.port, "SAM 2.1 queue to be cancelled", |_| server.recorded().iter().any(|r| r.path == "/queue"));
+    let queue = server.recorded().into_iter().find(|r| r.path == "/queue").unwrap();
+    assert_eq!(queue.body_json(), json!({"delete":["sam21-cancel"]}));
+}
+
+#[test]
+#[ignore = "runs the selected local SAM 3 model and may take several minutes"]
+fn selected_sam3_sample_real_comfyui() {
+    let endpoint = std::env::var("ARTCRAFT_SAM3_TEST_URL").expect("Set ARTCRAFT_SAM3_TEST_URL to the selected local endpoint");
+    let (summary, millis) = super::sam3_sample::run(&endpoint, super::sam3_sample::photo(), |_| Ok(()), || true).expect("Real SAM 3 selection");
+    assert!(summary.contains("1 image result"), "{summary}");
+    assert!(millis > 0);
+}
+
+#[test]
+#[ignore = "runs the selected local SAM 2.1 model and may take several minutes"]
+fn selected_sam21_sample_real_comfyui() {
+    let endpoint = std::env::var("ARTCRAFT_SAM21_TEST_URL").expect("Set ARTCRAFT_SAM21_TEST_URL to the selected local endpoint");
+    let mut w = world(vec![]);
+    let shared = SharedStore::new(w._dir.path().join("connections.json"));
+    let client = AiClient::new(ToolDesk::app().unwrap(), shared.clone(), Arc::new(MemoryStore::new()));
+    let desk = ToolDesk::new(client, shared, None);
+    let mut feature = craft_ai_features::builtin().into_iter().find(|f| f.id == "select-subject").unwrap();
+    feature.locals.iter_mut().find(|r| r.workflow == "sam21-segment").unwrap().usable = true;
+    desk.enable_local_recipe(&feature, "sam21-segment", endpoint.trim_end_matches("/v1")).unwrap();
+    w.port = DesktopFeatures::with(vec![feature], Arc::new(|| None), DownloadConfig::default(), Tools::new(Ok(desk)));
+    w.port.test("select-subject", false);
+    let snap = until(&mut w.port, "the selected SAM 2.1 sample", |s| matches!(s.sample, Sample::Passed { .. } | Sample::Failed { .. }));
+    match snap.sample {
+        Sample::Passed { summary, millis, .. } => {
+            assert!(summary.contains("1 image result"), "{summary}");
+            assert!(millis > 0);
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

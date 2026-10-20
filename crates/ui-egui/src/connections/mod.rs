@@ -127,6 +127,8 @@ pub struct ConnectionsUi {
     loaded: bool,
     /// A message under the list: `(text, is_error)`.
     pub(crate) notice: Option<(String, bool)>,
+    /// Set when saved connections or their model inventory changed.
+    changed: bool,
     /// Latest test of each saved connection this session.
     pub(crate) tested: HashMap<ConnectionId, TestState>,
     pending: Option<Pending>,
@@ -134,7 +136,7 @@ pub struct ConnectionsUi {
 
 impl Default for ConnectionsUi {
     fn default() -> Self {
-        Self { screen: Screen::List, rows: Vec::new(), loaded: false, notice: None, tested: HashMap::new(), pending: None }
+        Self { screen: Screen::List, rows: Vec::new(), loaded: false, notice: None, changed: false, tested: HashMap::new(), pending: None }
     }
 }
 
@@ -153,9 +155,8 @@ impl ConnectionsUi {
         }
     }
 
-    /// Remove pressed on a saved connection: ask first.
-    pub(crate) fn begin_remove(&mut self, id: &ConnectionId) {
-        self.screen = Screen::ConfirmRemove(id.clone());
+    pub(crate) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
     }
 
     pub(crate) fn reload(&mut self, port: &mut dyn ConnectionsPort) {
@@ -198,6 +199,7 @@ impl ConnectionsUi {
                 self.screen = Screen::List;
                 self.notice = warning.map(|w| (w, true));
                 self.reload(port);
+                self.changed = true;
                 true
             }
             Err(failure) => {
@@ -250,8 +252,8 @@ impl ConnectionsUi {
                 let passed = matches!(state, TestState::Passed { .. });
                 self.tested.insert(id, state);
                 if passed {
-                    // The models found were remembered; show the new count.
                     self.reload(port);
+                    self.changed = true;
                 }
             }
             None => {}
@@ -261,7 +263,10 @@ impl ConnectionsUi {
 
     pub(crate) fn set_enabled(&mut self, id: &ConnectionId, on: bool, port: &mut dyn ConnectionsPort) {
         match port.set_enabled(id, on) {
-            Ok(()) => self.reload(port),
+            Ok(()) => {
+                self.reload(port);
+                self.changed = true;
+            }
             Err(e) => self.notice = Some((e, true)),
         }
     }
@@ -269,7 +274,10 @@ impl ConnectionsUi {
     pub(crate) fn remove(&mut self, id: &ConnectionId, port: &mut dyn ConnectionsPort) {
         self.screen = Screen::List;
         match port.delete(id) {
-            Ok(()) => self.notice = None,
+            Ok(()) => {
+                self.notice = None;
+                self.changed = true;
+            }
             Err(e) => self.notice = Some((e, true)),
         }
         self.tested.remove(id);

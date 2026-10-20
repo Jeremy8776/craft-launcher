@@ -20,18 +20,20 @@ local-mirror = ["artcraft-launcher-native/local-mirror"]
 artcraft-launcher-core = { workspace = true }
 artcraft-launcher-ui-egui = { workspace = true }
 artcraft-launcher-native = { workspace = true }
-# Interim path dependencies on the shared AI layer until it has a home (craft-libs).
-craft-ai-client = { path = "../../../craft-ai-model/crates/ai-client" }
-craft-ai-model = { path = "../../../craft-ai-model/crates/ai-model" }
-craft-ai-features = { path = "../../../craft-ai-model/crates/ai-features" }
-craft-ai-native = { path = "../../../craft-ai-model/crates/ai-native" }
-craft-ai-comfy-env = { path = "../../../craft-ai-model/crates/ai-comfy-env" }
+# Local-only integration with the current shared AI worktree. Pin the reviewed shared revision before publishing.
+craft-ai-client = { path = "../../../craft-ai-wt-setup-completion/crates/ai-client" }
+craft-ai-model = { package = "craft-ai-core", path = "../../../craft-ai-wt-setup-completion/crates/ai-core" }
+craft-ai-features = { path = "../../../craft-ai-wt-setup-completion/crates/ai-features" }
+craft-ai-native = { path = "../../../craft-ai-wt-setup-completion/crates/ai-native" }
+craft-ai-comfy-env = { path = "../../../craft-ai-wt-setup-completion/crates/ai-comfy-env" }
+craft-ai-comfyui = { path = "../../../craft-ai-wt-setup-completion/crates/ai-comfyui" }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence", "links"] }
 egui = { workspace = true }
 log = { workspace = true }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 notify-rust = "4"
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal", "wayland"] }
 # The person's Downloads folder for the history export, and the local time zone for dates (both are
 # already in Cargo.lock through the native crate and env_logger).
 dirs = "6"
@@ -58,7 +60,7 @@ tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 
 [dev-dependencies]
 sha2 = "0.11"
-craft-ai-openai = { path = "../../../craft-ai-model/crates/ai-openai" }
+craft-ai-openai = { path = "../../../craft-ai-wt-setup-completion/crates/ai-openai" }
 serde_json = "1"
 tempfile = "3"
 

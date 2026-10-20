@@ -410,8 +410,8 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 	Express-mode API key only. The key cannot be tested without a paid request.	仅支持快速模式的 API 密钥。不发起付费请求就无法测试该密钥。
 	Staff-enabled API key. Whether a subscription covers it is unverified.	由工作人员开通的 API 密钥。订阅是否涵盖尚未核实。
 	Black Forest Labs	Black Forest Labs
-	Seedance (Volcengine Ark)	Seedance（火山引擎方舟）
-	Text to video with your Ark key.	使用你的 Ark 密钥进行文生视频。
+	Seedance (BytePlus ModelArk)	Seedance（BytePlus ModelArk）
+	Text to video with your BytePlus ModelArk key.	使用你的 BytePlus ModelArk 密钥进行文生视频。
 	Meta SAM License, community copy	Meta SAM 许可，社区副本
 	This file is a community copy of Meta's SAM 3 weights and declares no licence of its own. Meta's release is gated behind the SAM License.	该文件是社区上传的 Meta SAM 3 权重副本，自身未声明许可。Meta 的官方版本需先接受 SAM 许可才能获取。
 
@@ -486,6 +486,8 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 	Ready	就绪
 	Runs on this computer through ComfyUI. Your pictures never leave it.	通过 ComfyUI 在这台电脑上运行，你的图片不会离开这台电脑。
 	Set up AI	设置 AI
+	Configure	配置
+	See which Craft apps use each AI tool and set its model.	查看哪些 Craft 应用使用每种 AI 工具，并为其选择模型。
 	Set up one or more of these and the AI tools switch on in every Craft app that has them.	设置其中一项或多项，所有带有这些 AI 工具的 Craft 应用就会自动启用它们。
 	Set up the AI tools for every Craft app	为所有 Craft 应用设置 AI 工具
 	Set up, {size}	设置，{size}
@@ -502,6 +504,10 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 	Other servers	其他服务器
 	Servers, and which model each tool uses	服务器，以及每个工具使用的模型
 	Files in place	文件已就位
+	Check and use model	检查并使用模型
+	Checking model files...	正在检查模型文件...
+	Files checked. Model added for this tool.	文件已检查。已为此工具添加模型。
+	Files checked. Earlier model choice kept.	文件已检查。已保留之前选择的模型。
 	Planned for	计划用于
 	Model files installed. The app tool is not connected yet.	模型文件已安装，应用内工具尚未接入。
 # History page.
@@ -554,3 +560,52 @@ soundcraft	Recording, editing and mixing audio	音频录制、编辑与混音
 	By model	按模型
 	By app	按应用
 	Average	平均
+
+	Runs on this computer	在这台电脑上运行
+	No models found yet	暂未找到模型
+@plural	{n} model|{n} models	{n} 个模型
+
+# Capability-first AI setup and tool descriptions
+	AI tools	AI 工具
+	ArtCraft Launcher cannot use this option yet.	ArtCraft Launcher 暂不支持此选项。
+	Available in {app}: {tool}	可在 {app} 中使用：{tool}
+	Choose the model each AI tool uses, then check that it works.	为每项 AI 工具选择模型，然后检查是否可用。
+	Connect a service	连接服务
+	Connect another service	再连接一个服务
+	Planned for {app}: {tool}	计划用于 {app}：{tool}
+	Suggested for {app}: {tool}	建议用于 {app}：{tool}
+	The local service for these files was not found.	未找到这些文件所需的本地服务。
+	Add a folder	添加文件夹
+	Checking model folders...	正在检查模型文件夹...
+	Choose where new model files should go. Existing files stay where they are.	选择新模型文件的保存位置。现有文件会保留在原处。
+	Default folder changed.	默认文件夹已更改。
+	Default for new downloads	Новые загрузки по умолчанию
+	Folder added.	文件夹已添加。
+	Folder checked again.	文件夹已重新检查。
+	Folder removed from the list. Its files were not deleted.	文件夹已从列表中移除，其中的文件未被删除。
+	Folders	文件夹
+	Installed. The files are ready to test.	已安装。文件已准备好进行测试。
+	Make default	设为默认文件夹
+	No folders yet. Add one to choose where model files are saved.	还没有文件夹。添加一个文件夹来选择模型文件的保存位置。
+	Read-only	只读
+	Rescan	重新扫描
+	That folder could not be changed. Check that it is available, then try again.	无法更改此文件夹。请检查文件夹是否可用，然后重试。
+	Updating folders...	正在更新文件夹...
+	Choose a folder for model files	选择模型文件夹
+	This model cannot be used by a Craft app yet.	Craft 应用暂时无法使用此模型。
+	Remove background	移除背景
+	Cut the subject out and leave the background transparent.	抠出主体并将背景设为透明。
+	Remove Background	移除背景
+	Run with	运行方式
+	Inside this app	在此应用中
+	This model is not available with every option.	此模型并非适用于所有选项。
+
+# Runtime settings in Advanced.
+	Engines	运行引擎
+	Choose where a local model runs. Options that cannot use it are unavailable.	选择本地模型的运行位置。不兼容的选项将不可用。
+	Choose a local model to set where it runs.	选择本地模型，以设置其运行位置。
+	Setup only	仅可安装
+	Models marked Setup only can be installed, but no Craft app can use them yet.	标记为“仅可安装”的模型可以安装，但目前没有 Craft 应用能使用它们。
+	Licences of what this uses	所用组件的许可
+	Where the publisher says so	发布方的说明出处
+	This is what each publisher says about its terms. ArtCraft has not checked it, it is not legal advice, and ArtCraft gives no warranty or indemnity for any model, add-on or result. Whether it suits your use, including commercial use, is your decision.	以下是各发布方自己声明的条款。ArtCraft 未核实这些内容，它们不构成法律意见，ArtCraft 对任何模型、插件或结果均不提供担保或赔偿。是否适合你的用途（包括商用）由你自己决定。

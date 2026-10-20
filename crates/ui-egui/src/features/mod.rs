@@ -1,8 +1,7 @@
-//! The Connections dialog's tools: what the Craft apps can do with AI, which model does each job,
-//! and whether it really does it.
+//! The Connections dialog's tools: which model does each job, and whether the person has checked it.
 //!
-//! The Tools window is for choosing, for each tool, which connected model does that job, then
-//! checking it. Connecting providers is a separate window (Connections).
+//! The person chooses a model for each tool; connecting a service only makes its models available.
+//! The same screen keeps model setup, connections, and per-tool testing together.
 //!
 //! This module holds the state and the port the desktop shell implements. `hub` lays out the
 //! dialog, `rail` draws the list on the left, `detail` and `tool` draw a tool's pane (apps, model
@@ -10,11 +9,19 @@
 //! [`FeaturesPort`], so the UI never touches the disk, the keychain or the network (the web build
 //! has no port and the screen never appears there).
 
+mod configure;
+mod engines;
 mod history;
 mod history_overview;
 mod history_table;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 mod home;
+mod licences;
+mod models;
+mod overview;
 mod setup;
+mod setup_window;
 #[cfg(test)]
 mod tests;
 mod text;
@@ -33,6 +40,7 @@ pub enum Install {
     Idle,
     Running {
         feature: String,
+        recipe: String,
         file: String,
         /// The download is done and the file is being checked.
         verifying: bool,
@@ -45,9 +53,11 @@ pub enum Install {
     /// Everything for the feature was downloaded and checked.
     Done {
         feature: String,
+        recipe: String,
     },
     Failed {
         feature: String,
+        recipe: String,
         message: String,
     },
 }
@@ -57,6 +67,8 @@ pub enum Install {
 pub struct ToolChoice {
     pub connection: ConnectionId,
     pub model: ModelId,
+    /// Internal id of the provider or local runtime behind this connection.
+    pub provider: String,
     /// "Model name, Connection name", for the picker.
     pub label: String,
     /// The model runs on this computer.
@@ -137,6 +149,53 @@ pub struct Snapshot {
     pub tools: Vec<ToolState>,
     pub install: Install,
     pub sample: Sample,
+    /// Shared destinations for model files.
+    pub folders: FoldersSnapshot,
+    /// Checking and registering an existing local model.
+    pub local_use: LocalUse,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LocalUse {
+    #[default]
+    Idle,
+    Checking {
+        feature: String,
+        recipe: String,
+    },
+    Enabled {
+        feature: String,
+        recipe: String,
+        bound: bool,
+    },
+    Failed {
+        feature: String,
+        recipe: String,
+        message: String,
+    },
+}
+
+/// Current view of folders that supply or receive model files.
+#[derive(Clone, Debug, Default)]
+pub struct FoldersSnapshot {
+    /// Whether the folder list has been loaded at least once.
+    pub loaded: bool,
+    /// A folder operation is in progress.
+    pub busy: bool,
+    /// Known shared model folders.
+    pub folders: Vec<craft_ai_model::model_folders::ModelFolder>,
+    /// Result of the last folder action, for the screen to explain.
+    pub notice: Option<FolderNotice>,
+}
+
+/// A safe, plain-language result for the last folder operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderNotice {
+    Added,
+    DefaultChanged,
+    Rescanned,
+    Removed,
+    Failed,
 }
 
 /// What only the desktop shell can do for this screen.
@@ -151,6 +210,17 @@ pub trait FeaturesPort {
     /// Starts downloading what `feature` is missing. `accepted` says the person agreed to the
     /// licences shown; the port refuses to start without it when a licence needs accepting.
     fn install(&mut self, feature: &str, accepted: bool) -> Result<(), String>;
+    /// Installs exactly the named model, never another recipe of the same tool.
+    fn install_recipe(&mut self, _feature: &str, _recipe: &str, _accepted: bool) -> Result<(), String> {
+        Err("That model is not available here.".to_owned())
+    }
+    /// Checks existing files and registers this model without running it.
+    fn use_local_recipe(&mut self, _feature: &str, _recipe: &str) -> Result<(), String> {
+        Err("This model cannot be used here yet.".to_owned())
+    }
+    fn use_local(&mut self, _feature: &str) -> Result<(), String> {
+        Err("This model cannot be used here yet.".to_owned())
+    }
     fn cancel_install(&mut self);
     /// Makes this model the launcher's choice for the tool, or forgets the choice for `None`.
     fn choose(&mut self, feature: &str, choice: Option<(ConnectionId, ModelId)>) -> Result<(), String>;
@@ -168,6 +238,16 @@ pub trait FeaturesPort {
     fn export_history(&mut self, csv: &str) -> Result<String, String>;
     /// The time now and the local offset from UTC.
     fn clock(&self) -> Clock;
+    /// Reloads the shared model-folder list.
+    fn refresh_folders(&mut self) {}
+    /// Opens the host's folder chooser and adds the selected folder.
+    fn add_folder(&mut self) {}
+    /// Marks this folder as the destination for new model downloads.
+    fn set_default_folder(&mut self, _id: &str) {}
+    /// Re-scans model files in this folder.
+    fn rescan_folder(&mut self, _id: &str) {}
+    /// Removes a user-added folder from the shared list, without deleting its files.
+    fn remove_folder(&mut self, _id: &str) {}
 }
 
 /// What a tool's pane asks of its window.
@@ -183,15 +263,17 @@ pub enum Outcome {
 /// Which page of the Set up AI window is showing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Page {
-    /// What can be set up, and what each thing switches on.
+    /// The list of AI tools and their app usage.
     #[default]
     Home,
     /// Downloading the files for this feature's local model.
-    Local(String),
-    /// Connecting, editing or removing a service (the connection screens).
-    Connect,
-    /// Which model each tool uses.
-    Advanced,
+    Local(String, String),
+    /// Manage saved service and local runtime connections.
+    Connections,
+    /// Models discovered from saved connections.
+    Models,
+    /// Runtime choices for each configured tool.
+    Engines,
     /// Every AI job the apps have run, and what it cost.
     History,
 }
@@ -210,6 +292,7 @@ pub struct FeaturesUi {
     pub(crate) accepted: bool,
     /// A line under the screen: `(text, is_error)`.
     pub(crate) notice: Option<(String, bool)>,
+    pub(crate) configure: Option<configure::ConfigureState>,
     pub(crate) history: history::HistoryUi,
 }
 
@@ -221,17 +304,18 @@ impl FeaturesUi {
         self.refresh_pending = false;
         self.accepted = false;
         self.notice = None;
+        self.configure = None;
     }
 
-    pub(crate) fn begin_setup(&mut self, feature: &str) {
-        self.page = Page::Local(feature.to_owned());
+    pub(crate) fn begin_setup(&mut self, feature: &str, recipe: &str) {
+        self.page = Page::Local(feature.to_owned(), recipe.to_owned());
         self.accepted = false;
         self.notice = None;
     }
 
     /// Back to the list. Whatever was just done may have changed what is switched on.
     pub(crate) fn back(&mut self) {
-        self.page = Page::Home;
+        self.page = Page::Models;
         self.refresh_pending = true;
         self.notice = None;
     }
@@ -245,15 +329,17 @@ impl FeaturesUi {
             self.scan_requested = true;
             port.rescan();
             port.refresh_tools();
+            port.refresh_folders();
         } else if self.refresh_pending {
             port.refresh_tools();
+            port.refresh_folders();
         }
         self.refresh_pending = false;
     }
 
     /// Install pressed on the setup screen.
-    pub(crate) fn start_install(&mut self, feature: &str, port: &mut dyn FeaturesPort) {
-        self.notice = match port.install(feature, self.accepted) {
+    pub(crate) fn start_install(&mut self, feature: &str, recipe: &str, port: &mut dyn FeaturesPort) {
+        self.notice = match port.install_recipe(feature, recipe, self.accepted) {
             Ok(()) => None,
             Err(message) => Some((message, true)),
         };
@@ -264,7 +350,7 @@ impl FeaturesUi {
         self.notice = port.choose(feature, choice).err().map(|message| (message, true));
     }
 
-    pub(crate) fn plan_for<'a>(&self, snapshot: &'a Snapshot, feature: &str) -> Option<&'a Plan> {
-        snapshot.plans.iter().find(|p| p.feature == feature)
+    pub(crate) fn plan_for_recipe<'a>(&self, snapshot: &'a Snapshot, feature: &str, recipe: &str) -> Option<&'a Plan> {
+        snapshot.plans.iter().find(|p| p.feature == feature && p.recipe == recipe)
     }
 }

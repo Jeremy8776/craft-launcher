@@ -10,13 +10,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::features_folders::DesktopFolders;
 use crate::features_tools::Tools;
 use crate::history_port::DesktopHistory;
 use artcraft_launcher_ui_egui::FeaturesPort;
-use artcraft_launcher_ui_egui::features::{Clock, Install, Snapshot};
+use artcraft_launcher_ui_egui::features::{Clock, Install, LocalUse, Snapshot};
 use craft_ai_client::{AiClient, ToolDesk};
-use craft_ai_comfy_env::{ComfyInstall, DownloadConfig, Downloader, Phase, scan};
-use craft_ai_features::{Feature, Inventory, State, plan};
+use craft_ai_comfy_env::{ComfyInstall, DownloadConfig, Downloader, Phase, scan, verify_file};
+use craft_ai_features::{Feature, Inventory, State, plans};
 use craft_ai_model::{ConnectionId, ErrorKind, ModelId};
 use craft_ai_native::{ConsentFile, shared::SharedStore};
 
@@ -29,6 +30,7 @@ struct Shared {
     plans: Vec<craft_ai_features::Plan>,
     comfy: Option<ComfyInstall>,
     install: Install,
+    local_use: LocalUse,
 }
 
 pub struct DesktopFeatures {
@@ -38,6 +40,7 @@ pub struct DesktopFeatures {
     shared: Arc<Mutex<Shared>>,
     cancel: Arc<AtomicBool>,
     tools: Tools,
+    folders: DesktopFolders,
     history: DesktopHistory,
 }
 
@@ -53,14 +56,23 @@ impl DesktopFeatures {
     }
 
     pub(crate) fn with(features: Vec<Feature>, locate: Locator, config: DownloadConfig, tools: Tools) -> Self {
-        Self { features, locate, config, shared: Arc::default(), cancel: Arc::default(), tools, history: DesktopHistory::new() }
+        Self {
+            features,
+            locate,
+            config,
+            shared: Arc::default(),
+            cancel: Arc::default(),
+            tools,
+            folders: DesktopFolders::new(),
+            history: DesktopHistory::new(),
+        }
     }
 
     /// Scans on the calling thread and stores the result.
     fn scan_into(features: &[Feature], locate: &Locator, shared: &Mutex<Shared>) {
         let comfy = locate();
         let inventory = comfy.as_ref().map_or_else(Inventory::default, scan);
-        let plans = features.iter().map(|f| plan(f, &inventory)).collect();
+        let plans = features.iter().flat_map(|f| plans(f, &inventory)).collect();
         let mut guard = lock(shared);
         guard.plans = plans;
         guard.comfy = comfy;
@@ -88,11 +100,40 @@ impl FeaturesPort for DesktopFeatures {
     fn snapshot(&mut self) -> Snapshot {
         let guard = lock(&self.shared);
         let (tools, sample) = self.tools.snapshot();
-        Snapshot { scanning: guard.scanning, plans: guard.plans.clone(), tools, install: guard.install.clone(), sample }
+        let folders = self.folders.snapshot();
+        Snapshot {
+            scanning: guard.scanning,
+            plans: guard.plans.clone(),
+            tools,
+            install: guard.install.clone(),
+            sample,
+            folders,
+            local_use: guard.local_use.clone(),
+        }
     }
 
     fn refresh_tools(&mut self) {
         self.tools.refresh(&self.features);
+    }
+
+    fn refresh_folders(&mut self) {
+        self.folders.refresh();
+    }
+
+    fn add_folder(&mut self) {
+        self.folders.add_folder();
+    }
+
+    fn set_default_folder(&mut self, id: &str) {
+        self.folders.set_default_folder(id);
+    }
+
+    fn rescan_folder(&mut self, id: &str) {
+        self.folders.rescan_folder(id);
+    }
+
+    fn remove_folder(&mut self, id: &str) {
+        self.folders.remove_folder(id);
     }
 
     fn choose(&mut self, feature: &str, choice: Option<(ConnectionId, ModelId)>) -> Result<(), String> {
@@ -128,12 +169,17 @@ impl FeaturesPort for DesktopFeatures {
     }
 
     fn install(&mut self, feature: &str, accepted: bool) -> Result<(), String> {
+        let recipe = self.features.iter().find(|f| f.id == feature).and_then(|f| f.locals.first()).ok_or("That tool is not known.")?.workflow.clone();
+        self.install_recipe(feature, &recipe, accepted)
+    }
+
+    fn install_recipe(&mut self, feature: &str, recipe: &str, accepted: bool) -> Result<(), String> {
         let (files, comfy) = {
             let mut guard = lock(&self.shared);
             if guard.install_running {
                 return Err("A download is already running.".to_owned());
             }
-            let plan = guard.plans.iter().find(|p| p.feature == feature).ok_or("That tool is not known.")?;
+            let plan = guard.plans.iter().find(|p| p.feature == feature && p.recipe == recipe).ok_or("That model is not known.")?;
             if plan.state != State::NeedsInstall || plan.missing_files.is_empty() {
                 return Err("There is nothing to download for this tool.".to_owned());
             }
@@ -149,6 +195,7 @@ impl FeaturesPort for DesktopFeatures {
         self.cancel.store(false, Ordering::Relaxed);
         let ctx = Job {
             feature: feature.to_owned(),
+            recipe: recipe.to_owned(),
             files,
             comfy,
             downloader: Downloader::new(self.config.clone()),
@@ -158,6 +205,46 @@ impl FeaturesPort for DesktopFeatures {
             locate: Arc::clone(&self.locate),
         };
         std::thread::spawn(move || ctx.run());
+        Ok(())
+    }
+
+    fn use_local(&mut self, id: &str) -> Result<(), String> {
+        let recipe = self.features.iter().find(|f| f.id == id).and_then(|f| f.locals.first()).ok_or("That tool is not known.")?.workflow.clone();
+        self.use_local_recipe(id, &recipe)
+    }
+
+    fn use_local_recipe(&mut self, id: &str, recipe_id: &str) -> Result<(), String> {
+        let (feature, comfy) = {
+            let mut guard = lock(&self.shared);
+            if matches!(guard.local_use, LocalUse::Checking { .. }) {
+                return Err("A model is already being checked.".to_owned());
+            }
+            let plan = guard.plans.iter().find(|p| p.feature == id && p.recipe == recipe_id).ok_or("That model is not known.")?;
+            if plan.state != State::Ready {
+                return Err("The model files are not in place yet.".to_owned());
+            }
+            let feature = self
+                .features
+                .iter()
+                .find(|f| f.id == id)
+                .filter(|f| f.locals.iter().any(|r| r.workflow == recipe_id && r.usable))
+                .cloned()
+                .ok_or("This model cannot be used by an app yet.")?;
+            let comfy = guard.comfy.clone().ok_or("The local service was not found.")?;
+            guard.local_use = LocalUse::Checking { feature: id.to_owned(), recipe: recipe_id.to_owned() };
+            (feature, comfy)
+        };
+        let shared = Arc::clone(&self.shared);
+        let tools = self.tools.clone();
+        let features = self.features.clone();
+        let recipe = recipe_id.to_owned();
+        std::thread::spawn(move || {
+            let result = check_local_files(&feature, &recipe, &comfy).and_then(|()| tools.enable_local_recipe(&features, &feature, &recipe));
+            lock(&shared).local_use = match result {
+                Ok(enabled) => LocalUse::Enabled { feature: feature.id, recipe, bound: enabled.bound },
+                Err(message) => LocalUse::Failed { feature: feature.id, recipe, message },
+            };
+        });
         Ok(())
     }
 
@@ -175,8 +262,24 @@ fn standard_desk() -> Result<ToolDesk, String> {
     Ok(ToolDesk::new(client, shared, ConsentFile::at_default_location(&app)))
 }
 
+/// A scan reads metadata only. Hash the actual bytes before registering an existing model.
+fn check_local_files(feature: &Feature, recipe_id: &str, comfy: &ComfyInstall) -> Result<(), String> {
+    let recipe = feature.locals.iter().find(|r| r.workflow == recipe_id).ok_or("That model is not known.")?;
+    for file in &recipe.models {
+        let matched = comfy.model_dirs.iter().filter(|(kind, _)| kind.eq_ignore_ascii_case(&file.folder)).any(|(_, dir)| {
+            let path = dir.join(&file.filename);
+            path.is_file() && !path.is_symlink() && verify_file(&path, file, &AtomicBool::new(false), &mut |_| {}).is_ok()
+        });
+        if !matched {
+            return Err(format!("{} did not pass the file check. Check the model files and try again.", file.filename));
+        }
+    }
+    Ok(())
+}
+
 struct Job {
     feature: String,
+    recipe: String,
     files: Vec<craft_ai_features::ModelFile>,
     comfy: ComfyInstall,
     downloader: Downloader,
@@ -194,9 +297,9 @@ impl Job {
         let mut guard = lock(&self.shared);
         guard.install_running = false;
         guard.install = match result {
-            Ok(()) => Install::Done { feature: self.feature },
+            Ok(()) => Install::Done { feature: self.feature, recipe: self.recipe },
             Err((ErrorKind::Cancelled, _)) => Install::Idle,
-            Err((_, message)) => Install::Failed { feature: self.feature, message },
+            Err((_, message)) => Install::Failed { feature: self.feature, recipe: self.recipe, message },
         };
     }
 
@@ -205,11 +308,12 @@ impl Job {
         for (index, file) in self.files.iter().enumerate() {
             let dir = self.comfy.models_dir_for(&file.folder).ok_or((ErrorKind::InvalidRequest, "The model folder name is not valid.".to_owned()))?;
             let shared = Arc::clone(&self.shared);
-            let (feature, name) = (self.feature.clone(), file.filename.clone());
+            let (feature, recipe, name) = (self.feature.clone(), self.recipe.clone(), file.filename.clone());
             self.downloader
                 .fetch(file, &dir, None, &self.cancel, &mut |p| {
                     lock(&shared).install = Install::Running {
                         feature: feature.clone(),
+                        recipe: recipe.clone(),
                         file: name.clone(),
                         verifying: p.phase == Phase::Verifying,
                         done: p.done,

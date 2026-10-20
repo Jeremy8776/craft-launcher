@@ -438,8 +438,8 @@ filter	Installed	Установлены
 	Express-mode API key only. The key cannot be tested without a paid request.	Только ключ API в экспресс-режиме. Ключ нельзя проверить без платного запроса.
 	Staff-enabled API key. Whether a subscription covers it is unverified.	Ключ API, включённый сотрудниками. Покрывает ли его подписка, не проверено.
 	Black Forest Labs	Black Forest Labs
-	Seedance (Volcengine Ark)	Seedance (Volcengine Ark)
-	Text to video with your Ark key.	Текст в видео с вашим ключом Ark.
+	Seedance (BytePlus ModelArk)	Seedance (BytePlus ModelArk)
+	Text to video with your BytePlus ModelArk key.	Текст в видео с вашим ключом BytePlus ModelArk.
 	Meta SAM License, community copy	Лицензия Meta SAM, копия сообщества
 	This file is a community copy of Meta's SAM 3 weights and declares no licence of its own. Meta's release is gated behind the SAM License.	Этот файл — копия весов Meta SAM 3, выложенная сообществом, и собственной лицензии не указывает. Оригинальный выпуск Meta доступен только после принятия лицензии SAM.
 
@@ -514,6 +514,8 @@ filter	Installed	Установлены
 	Ready	Готово
 	Runs on this computer through ComfyUI. Your pictures never leave it.	Работает на этом компьютере через ComfyUI. Ваши изображения никуда не уходят.
 	Set up AI	Настройка ИИ
+	Configure	Настроить
+	See which Craft apps use each AI tool and set its model.	Посмотрите, какие приложения Craft используют инструменты ИИ, и выберите для них модели.
 	Set up one or more of these and the AI tools switch on in every Craft app that has them.	Настройте один или несколько вариантов, и ИИ-инструменты включатся во всех приложениях Craft, где они есть.
 	Set up the AI tools for every Craft app	Настройте ИИ-инструменты для всех приложений Craft
 	Set up, {size}	Настроить, {size}
@@ -530,6 +532,10 @@ filter	Installed	Установлены
 	Other servers	Другие серверы
 	Servers, and which model each tool uses	Серверы и модель каждого инструмента
 	Files in place	Файлы на месте
+	Check and use model	Проверить и использовать модель
+	Checking model files...	Проверка файлов модели...
+	Files checked. Model added for this tool.	Файлы проверены. Модель добавлена для этого инструмента.
+	Files checked. Earlier model choice kept.	Файлы проверены. Предыдущий выбор модели сохранён.
 	Planned for	Запланировано для
 	Model files installed. The app tool is not connected yet.	Файлы модели установлены. Инструмент в приложении пока не подключён.
 # History page.
@@ -582,3 +588,52 @@ filter	Installed	Установлены
 	By model	По моделям
 	By app	По приложениям
 	Average	В среднем
+
+	Runs on this computer	Работает на этом компьютере
+	No models found yet	Модели пока не найдены
+@plural	{n} model|{n} models	{n} модель|{n} модели|{n} моделей
+
+# Capability-first AI setup and tool descriptions
+	AI tools	Инструменты ИИ
+	ArtCraft Launcher cannot use this option yet.	ArtCraft Launcher пока не поддерживает этот вариант.
+	Available in {app}: {tool}	Доступно в {app}: {tool}
+	Choose the model each AI tool uses, then check that it works.	Выберите модель для каждого инструмента ИИ и проверьте её работу.
+	Connect a service	Подключить сервис
+	Connect another service	Подключить ещё один сервис
+	Planned for {app}: {tool}	Запланировано для {app}: {tool}
+	Suggested for {app}: {tool}	Предлагается для {app}: {tool}
+	The local service for these files was not found.	На этом компьютере не найден нужный локальный сервис.
+	Add a folder	Добавить папку
+	Checking model folders...	Проверка папок с моделями...
+	Choose where new model files should go. Existing files stay where they are.	Выберите, куда сохранять новые файлы моделей. Существующие файлы останутся на своих местах.
+	Default folder changed.	Папка для новых загрузок изменена.
+	Default for new downloads	Папка для новых загрузок
+	Folder added.	Папка добавлена.
+	Folder checked again.	Папка проверена повторно.
+	Folder removed from the list. Its files were not deleted.	Папка удалена из списка. Файлы в ней не удалены.
+	Folders	Папки
+	Installed. The files are ready to test.	Установлено. Файлы готовы к проверке.
+	Make default	Сделать папкой по умолчанию
+	No folders yet. Add one to choose where model files are saved.	Папок пока нет. Добавьте папку, чтобы выбрать место для файлов моделей.
+	Read-only	Только чтение
+	Rescan	Проверить снова
+	That folder could not be changed. Check that it is available, then try again.	Не удалось изменить папку. Убедитесь, что она доступна, и попробуйте ещё раз.
+	Updating folders...	Обновление списка папок...
+	Choose a folder for model files	Выберите папку для файлов моделей
+	This model cannot be used by a Craft app yet.	Приложения Craft пока не могут использовать эту модель.
+	Remove background	Удаление фона
+	Cut the subject out and leave the background transparent.	Вырежьте объект и сделайте фон прозрачным.
+	Remove Background	Удаление фона
+	Run with	Запускать через
+	Inside this app	Внутри приложения
+	This model is not available with every option.	Эта модель доступна не во всех вариантах.
+
+# Runtime settings in Advanced.
+	Engines	Механизмы запуска
+	Choose where a local model runs. Options that cannot use it are unavailable.	Выберите, где запускать локальную модель. Несовместимые варианты недоступны.
+	Choose a local model to set where it runs.	Выберите локальную модель, чтобы указать, где её запускать.
+	Setup only	Только установка
+	Models marked Setup only can be installed, but no Craft app can use them yet.	Модели с пометкой «Только установка» можно установить, но ни одно приложение Craft пока не может их использовать.
+	Licences of what this uses	Лицензии того, что это использует
+	Where the publisher says so	Где издатель это указывает
+	This is what each publisher says about its terms. ArtCraft has not checked it, it is not legal advice, and ArtCraft gives no warranty or indemnity for any model, add-on or result. Whether it suits your use, including commercial use, is your decision.	Здесь приведено то, что каждый издатель сообщает об условиях. ArtCraft этого не проверял, это не юридическая консультация, и ArtCraft не даёт никаких гарантий и не возмещает убытки за модель, дополнение или результат. Подходит ли это для вашего случая, в том числе коммерческого, решаете вы.

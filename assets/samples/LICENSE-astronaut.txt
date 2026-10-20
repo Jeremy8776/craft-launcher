@@ -1,0 +1,7 @@
+Astronaut photograph (Eileen Collins)
+Creator: NASA
+Source: scikit-image 0.19.3, skimage/data/astronaut.png.
+Source documentation: https://scikit-image.org/docs/stable/api/skimage.data.html#skimage.data.astronaut
+
+The scikit-image maintainers state: "No known copyright restrictions, released into the public domain."
+This file is a copy of the sample used in the local SAM 3 research fixture, not an ArtCraft logo or artwork.

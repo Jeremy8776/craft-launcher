@@ -185,7 +185,7 @@ impl FeedRelease {
     fn to_release(&self, repo: &str, mirror: Option<&str>) -> Option<Release> {
         let version = version::parse(&self.tag)?;
         let prefix = release::download_prefix(repo);
-        let allowed = |url: &str| url.starts_with(&prefix) || mirror.is_some_and(|m| url.starts_with(m) && !url.contains(".."));
+        let allowed = |url: &str| (url.starts_with(&prefix) || mirror.is_some_and(|m| url.starts_with(m))) && !release::has_path_trick(url);
         let releases_page = format!("https://github.com/{repo}/releases/");
         let assets = self
             .assets
@@ -299,7 +299,7 @@ struct RawRelease {
 
 impl RawRelease {
     fn into_release(self) -> Option<FeedRelease> {
-        let tag = self.tag.filter(|t| !t.is_empty() && t.len() <= 64)?;
+        let tag = self.tag.filter(|t| !t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+".contains(&b)))?;
         Some(FeedRelease {
             tag,
             name: self.name.unwrap_or_default(),
@@ -370,7 +370,9 @@ impl RawRepoRename {
             matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty()
           && r.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_./".contains(&c)))
         };
-        (ok(&self.old_name) && ok(&self.new_name)).then(|| RepoRename {
+        // A move is followed only inside an owner the launcher trusts: the feed alone can't send
+        // downloads to an arbitrary GitHub repo.
+        (ok(&self.old_name) && ok(&self.new_name) && release::trusted_repo(&self.new_name)).then(|| RepoRename {
             old_repo: self.old_name,
             new_repo: self.new_name,
             renamed_at: self.renamed_at.as_deref().and_then(parse_rfc3339),
@@ -403,9 +405,7 @@ impl RawNotice {
         if self.title.trim().is_empty() && self.body.trim().is_empty() {
             return None;
         }
-        let link = self
-            .maybe_web_link
-            .filter(|l| (l.starts_with("https://") || l.starts_with("http://")) && l.len() <= 2000 && !l.chars().any(char::is_whitespace));
+        let link = self.maybe_web_link.filter(|l| release::safe_web_link(l));
         Some(Notice {
             id: format!("{kind}:{}:{}", self.created_at.as_deref().unwrap_or(""), self.title.trim()),
             title: truncate(self.title.trim(), 200),
@@ -524,18 +524,39 @@ mod tests {
         let moved = sample()
             .replace(
                 "\"repo_renames\": []",
-                r#""repo_renames": [{"old_name": "storytold/photocraft", "new_name": "art/photocraft", "renamed_at": null}]"#,
+                r#""repo_renames": [{"old_name": "storytold/photocraft", "new_name": "storytold/photocraft-app", "renamed_at": null}]"#,
             )
-            .replace("\"name\": \"PhotoCraft\", \"repo\": \"storytold/photocraft\"", "\"name\": \"PhotoCraft\", \"repo\": \"art/photocraft\"")
-            .replace("github.com/storytold/photocraft/releases", "github.com/art/photocraft/releases");
+            .replace(
+                "\"name\": \"PhotoCraft\", \"repo\": \"storytold/photocraft\"",
+                "\"name\": \"PhotoCraft\", \"repo\": \"storytold/photocraft-app\"",
+            )
+            .replace("github.com/storytold/photocraft/releases", "github.com/storytold/photocraft-app/releases");
         let feed = Feed::parse(&moved).unwrap();
-        assert_eq!(feed.repo_for(app("photocraft")), "art/photocraft");
+        assert_eq!(feed.repo_for(app("photocraft")), "storytold/photocraft-app");
         let FeedAnswer::Fresh(Some(r)) = feed.answer(app("photocraft"), NOW) else { panic!() };
-        assert!(r.assets[0].url.starts_with("https://github.com/art/photocraft/releases/download/"));
+        assert!(r.assets[0].url.starts_with("https://github.com/storytold/photocraft-app/releases/download/"));
         // The same entry without the rename: the repo doesn't match, so GitHub decides.
-        let unannounced = moved.replace(r#"{"old_name": "storytold/photocraft", "new_name": "art/photocraft", "renamed_at": null}"#, "");
+        let unannounced = moved.replace(r#"{"old_name": "storytold/photocraft", "new_name": "storytold/photocraft-app", "renamed_at": null}"#, "");
         let feed = Feed::parse(&unannounced).unwrap();
         assert_eq!(feed.answer(app("photocraft"), NOW), FeedAnswer::AskGitHub);
+    }
+
+    #[test]
+    fn a_repo_move_to_an_untrusted_owner_is_ignored() {
+        let moved = sample().replace(
+            "\"repo_renames\": []",
+            r#""repo_renames": [{"old_name": "storytold/photocraft", "new_name": "evil/malware", "renamed_at": null}]"#,
+        );
+        let feed = Feed::parse(&moved).unwrap();
+        assert!(feed.repo_renames.is_empty());
+        assert_eq!(feed.repo_for(app("photocraft")), "storytold/photocraft");
+    }
+
+    #[test]
+    fn a_feed_download_that_climbs_out_of_the_release_folder_is_dropped() {
+        let sneaky = sample().replace("releases/download/v0.6.0/", "releases/download/../../../evil/repo/releases/download/v1/");
+        let FeedAnswer::Fresh(Some(r)) = Feed::parse(&sneaky).unwrap().answer(app("photocraft"), NOW) else { panic!() };
+        assert!(r.assets.is_empty());
     }
 
     #[test]

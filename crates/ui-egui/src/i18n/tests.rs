@@ -130,6 +130,7 @@ fn complete_catalogs_cover_every_ui_literal() {
         include_str!("../connections/form.rs"),
         include_str!("../dialogs.rs"),
         include_str!("../features/home.rs"),
+        include_str!("../features/overview.rs"),
         include_str!("../features/mod.rs"),
         include_str!("../features/setup.rs"),
         include_str!("../features/text.rs"),
@@ -141,6 +142,8 @@ fn complete_catalogs_cover_every_ui_literal() {
         include_str!("../widgets.rs"),
         // The desktop shell's tray menu and tooltip.
         include_str!("../../../../apps/artcraft-launcher/src/tray.rs"),
+        // Native folder-picker title used by the desktop shell.
+        include_str!("../../../../apps/artcraft-launcher/src/features_folders.rs"),
     ];
     let mut keys = BTreeSet::new();
     for source in sources {

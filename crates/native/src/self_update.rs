@@ -27,7 +27,7 @@ use artcraft_launcher_core::version::{self, Version};
 #[cfg(target_os = "macos")]
 use artcraft_launcher_core::{InstallSource, Installed};
 
-use crate::http::{Http, Stop};
+use crate::http::{Http, Stop, Verified};
 use crate::install::{self, Job};
 use crate::paths::Paths;
 use crate::process;
@@ -169,7 +169,13 @@ pub fn update(
         .ok_or_else(|| format!("ArtCraft Launcher {} has no {} for {}", release.version_label(), install.kind().label(), platform.label()))?;
     let asset = asset.clone();
     let mut job = Job { http, paths, stop, phase };
-    let (file, _) = install::download(release, &asset, &mut job)?;
+    let (file, verified) = install::download(release, &asset, &mut job)?;
+    // The launcher replaces itself with this file, so unlike an app install it never settles for a
+    // size-only check: without a published SHA-256 it stops and points at the website.
+    if let Err(e) = require_checksum(verified) {
+        let _ = std::fs::remove_file(&file);
+        return Err(e);
+    }
     // The restart ends this process: nothing else may be under way.
     last()?;
     phase(JobPhase::Installing);
@@ -231,6 +237,14 @@ pub fn update(
             let _ = (pid, &file);
             Err("this copy of ArtCraft Launcher can't update itself; download the new version instead".into())
         }
+    }
+}
+
+/// The launcher's own update must have been checked against a published SHA-256.
+fn require_checksum(verified: Verified) -> Result<(), String> {
+    match verified {
+        Verified::Checksum => Ok(()),
+        Verified::SizeOnly => Err("this release publishes no checksum for the launcher, so it can't be verified and wasn't installed. Download the new version from the website instead".into()),
     }
 }
 
@@ -375,6 +389,12 @@ mod tests {
         assert_eq!(placed, current);
         assert_eq!(std::fs::read_to_string(current.join("Contents/MacOS/ArtCraft Launcher")).unwrap(), "0.2.0");
         assert!(!dir.path().join("Applications/.ArtCraft Launcher.app.partial").exists());
+    }
+
+    #[test]
+    fn the_launcher_never_updates_itself_from_an_unchecked_download() {
+        assert!(require_checksum(Verified::Checksum).is_ok());
+        assert!(require_checksum(Verified::SizeOnly).unwrap_err().contains("wasn't installed"));
     }
 
     #[test]

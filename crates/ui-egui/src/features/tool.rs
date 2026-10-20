@@ -9,13 +9,13 @@ use craft_ai_features::Feature;
 use craft_ai_model::{Billing, ConnectionId, ModelId, PRESETS};
 use egui::{RichText, Ui};
 
-use super::{FeaturesPort, FeaturesUi, Outcome, Sample, Snapshot, ToolChoice, ToolState, ToolStatus};
+use super::{FeaturesPort, FeaturesUi, Outcome, Sample, ToolState, ToolStatus};
 use crate::i18n::fmt;
 use crate::theme::Tokens;
 use crate::widgets::{self, Kind};
 
 /// What a press in the block asks for, applied after drawing so no borrow is held while it runs.
-enum Act {
+pub(super) enum Act {
     Choose(Option<(ConnectionId, ModelId)>),
     Test { agreed: bool },
     CancelTest,
@@ -23,73 +23,83 @@ enum Act {
 }
 
 impl FeaturesUi {
-    pub(super) fn tool_block(&mut self, ui: &mut Ui, feature: &Feature, snapshot: &Snapshot, port: &mut dyn FeaturesPort) -> Option<Outcome> {
-        let t = Tokens::get(ui.ctx());
-        let tool = snapshot.tools.iter().find(|s| s.feature == feature.id);
-        let sample = (snapshot.sample.feature() == Some(feature.id.as_str())).then_some(&snapshot.sample);
-        let mut act = None;
-        let mut outcome = None;
-
-        widgets::hud(ui, tl!("Model"), t.faint);
-        ui.add_space(2.0);
-        match tool {
-            Some(tool) if !tool.choices.is_empty() => {
-                act = picker(ui, feature, tool);
-                status_line(ui, tool);
-                if let Some(next) = sample_row(ui, tool, sample, &mut act) {
-                    outcome = Some(next);
-                }
-            }
-            _ => {
-                ui.add(egui::Label::new(RichText::new(tl!("No connected model can do this yet.")).color(t.muted)).wrap());
-                if !feature.cloud.is_empty() {
-                    ui.add_space(4.0);
-                    ui.add(egui::Label::new(RichText::new(tl!("Connect a hosted service that can:")).size(12.0).color(t.muted)).wrap());
-                    outcome = hosted_buttons(ui, feature);
-                } else {
-                    ui.add(egui::Label::new(RichText::new(tl!("None of the supported services does this yet.")).size(12.0).color(t.faint)).wrap());
-                }
-            }
+    /// A workflow's runtime setting, kept in Advanced rather than beside the main model choice.
+    /// Returns true when this tool has a local model whose runtime can be shown.
+    pub(super) fn engine_setting(&mut self, ui: &mut Ui, feature: &Feature, tool: &ToolState, port: &mut dyn FeaturesPort) -> bool {
+        let Some((_, model)) = &tool.bound else { return false };
+        if !tool.choices.iter().any(|c| &c.model == model && c.local) {
+            return false;
         }
-
-        match act {
-            Some(Act::Choose(choice)) => self.choose(&feature.id, choice, port),
-            Some(Act::Test { agreed }) => port.test(&feature.id, agreed),
-            Some(Act::CancelTest) => port.cancel_test(),
-            Some(Act::Dismiss) => port.dismiss_test(),
-            None => {}
-        }
-        outcome
+        ui.horizontal(|ui| {
+            if let Some(Act::Choose(choice)) = engine_picker(ui, feature, tool) {
+                self.choose(&feature.id, choice, port);
+            }
+        });
+        true
     }
 }
 
-/// The model picker. Returns the choice if it changed this frame.
-fn picker(ui: &mut Ui, feature: &Feature, tool: &ToolState) -> Option<Act> {
-    let current = tool.bound.as_ref().and_then(|(c, m)| tool.choices.iter().find(|x| &x.connection == c && &x.model == m));
-    let shown = current.map_or_else(
-        || match &tool.bound {
-            Some(_) => tl!("Chosen model unavailable").to_owned(),
-            None => tl!("Choose a model").to_owned(),
-        },
-        |c| c.label.clone(),
-    );
-    let mut act = None;
-    egui::ComboBox::from_id_salt(("tool-model", &feature.id)).selected_text(shown).width(ui.available_width().min(420.0)).show_ui(ui, |ui| {
-        if ui.selectable_label(false, tl!("Automatic (best available)")).clicked() {
-            act = Some(Act::Choose(None));
+/// A workflow's runtime is selected independently of its model. Switching is only enabled
+/// when the same model is available on that runtime; the saved binding changes only after the
+/// host accepts the choice, so an incompatible option never displaces the working route.
+fn engine_picker(ui: &mut Ui, feature: &Feature, tool: &ToolState) -> Option<Act> {
+    let (_, model) = tool.bound.as_ref()?;
+    let current = tool.choices.iter().find(|c| &c.model == model && c.local)?;
+
+    let mut providers: Vec<String> = Vec::new();
+    for choice in tool.choices.iter().filter(|c| c.local) {
+        if !providers.iter().any(|provider| provider == &choice.provider) {
+            providers.push(choice.provider.clone());
         }
-        for ToolChoice { connection, model, label, local } in &tool.choices {
-            let on = current.is_some_and(|c| &c.connection == connection && &c.model == model);
-            let text = if *local { fmt(tl!("{model} (this computer)"), &[("model", label)]) } else { label.clone() };
-            if ui.selectable_label(on, text).clicked() && !on {
-                act = Some(Act::Choose(Some((connection.clone(), model.clone()))));
+    }
+    if let Some(recipe) = feature.locals.iter().find(|r| r.workflow == model.as_str() || r.native.iter().any(|n| n.model == model.as_str())) {
+        if recipe.usable && !providers.iter().any(|p| p == "comfyui") {
+            providers.push("comfyui".to_owned());
+        }
+        for route in &recipe.native {
+            if !providers.iter().any(|p| p == &route.provider) {
+                providers.push(route.provider.clone());
             }
         }
+    }
+    let has_unavailable_option =
+        providers.iter().any(|provider| !tool.choices.iter().any(|c| c.local && c.provider == *provider && c.model == *model));
+    let selected = provider_name(&current.provider);
+    let mut action = None;
+    ui.horizontal(|ui| {
+        ui.label(tl!("Run with"));
+        egui::ComboBox::from_id_salt(("tool-runtime", &feature.id)).selected_text(&selected).show_ui(ui, |ui| {
+            for provider in &providers {
+                let target = tool.choices.iter().find(|c| c.local && c.provider == *provider && c.model == *model);
+                let name = provider_name(provider);
+                if let Some(target) = target {
+                    let is_current = provider == &current.provider;
+                    if ui.selectable_label(is_current, &name).clicked() && !is_current {
+                        action = Some(Act::Choose(Some((target.connection.clone(), target.model.clone()))));
+                    }
+                } else {
+                    ui.add_enabled_ui(false, |ui| {
+                        ui.button(&name).on_hover_text(tl!("Not available here"));
+                    });
+                }
+            }
+        });
     });
-    act
+    if has_unavailable_option {
+        ui.label(tl!("This model is not available with every option."));
+    }
+    action
 }
 
-fn status_line(ui: &mut Ui, tool: &ToolState) {
+pub(super) fn provider_name(provider: &str) -> String {
+    match provider {
+        "comfyui" => "ComfyUI".to_owned(),
+        "candle" | "burn" => tl!("Inside this app").to_owned(),
+        _ => tl!("This computer").to_owned(),
+    }
+}
+
+pub(super) fn status_line(ui: &mut Ui, tool: &ToolState) {
     let t = Tokens::get(ui.ctx());
     let (text, colour) = match &tool.status {
         ToolStatus::NoChoice => (tl!("No model chosen. Apps will ask, or fall back to their own setting.").to_owned(), t.muted),
@@ -101,7 +111,7 @@ fn status_line(ui: &mut Ui, tool: &ToolState) {
 }
 
 /// The test button and everything that follows from pressing it.
-fn sample_row(ui: &mut Ui, tool: &ToolState, sample: Option<&Sample>, act: &mut Option<Act>) -> Option<Outcome> {
+pub(super) fn sample_row(ui: &mut Ui, tool: &ToolState, sample: Option<&Sample>, act: &mut Option<Act>) -> Option<Outcome> {
     let t = Tokens::get(ui.ctx());
     ui.add_space(4.0);
     match sample {

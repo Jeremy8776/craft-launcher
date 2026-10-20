@@ -23,12 +23,17 @@ pub(crate) fn title(ui: &mut Ui, title: &str, subtitle: &str) {
 }
 
 impl ConnectionsUi {
-    /// Draws the dialog's contents. Returns true when the person closed it.
-    pub fn show(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort) -> bool {
-        self.show_sized(ui, port, 640.0f32.min(ui.ctx().content_rect().width() - 80.0))
+    /// Draws this screen inside Set up AI, where the side rail replaces the close button.
+    pub(crate) fn show_in_setup(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort, width: f32) {
+        self.show_sized(ui, port, width, false);
     }
 
-    fn show_sized(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort, width: f32) -> bool {
+    /// Draws the standalone dialog. Returns true when the person closed it.
+    pub fn show(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort) -> bool {
+        self.show_sized(ui, port, 640.0f32.min(ui.ctx().content_rect().width() - 80.0), true)
+    }
+
+    fn show_sized(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort, width: f32, closable: bool) -> bool {
         if !self.loaded {
             self.reload(port);
         }
@@ -38,7 +43,7 @@ impl ConnectionsUi {
         }
         ui.set_width(width);
         match &self.screen {
-            Screen::List => self.list(ui, port),
+            Screen::List => self.list(ui, port, closable),
             Screen::Pick => {
                 self.pick(ui);
                 false
@@ -55,7 +60,7 @@ impl ConnectionsUi {
         }
     }
 
-    fn list(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort) -> bool {
+    fn list(&mut self, ui: &mut Ui, port: &mut dyn ConnectionsPort, closable: bool) -> bool {
         let t = Tokens::get(ui.ctx());
         title(ui, tl!("Connections"), tl!("AI models for every Craft app"));
         if self.rows.is_empty() {
@@ -84,9 +89,11 @@ impl ConnectionsUi {
         let mut add = false;
         ui.horizontal(|ui| {
             add = widgets::button(ui, tl!("Add connection"), Kind::Primary, 0.0).clicked();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                close = widgets::button(ui, tl!("Close"), Kind::Secondary, 90.0).clicked();
-            });
+            if closable {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = widgets::button(ui, tl!("Close"), Kind::Secondary, 90.0).clicked();
+                });
+            }
         });
         if add {
             self.begin_pick();

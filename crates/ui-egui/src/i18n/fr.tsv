@@ -411,6 +411,9 @@ filter	Installed	Installées
 	Servers, and which model each tool uses	Serveurs, et modèle utilisé par chaque outil
 	Set up	Configurer
 	Set up AI	Configurer l'IA
+	Configure	Configurer
+	See which Craft apps use each AI tool and set its model.	Voir quels outils d'IA utilisent les apps Craft et choisir leur modèle.
+	Tools	Outils
 	Set up one or more of these and the AI tools switch on in every Craft app that has them.	Configurez-en un ou plusieurs et les outils d'IA s'activent dans chaque app Craft qui en propose.
 	Set up the AI tools for every Craft app	Configurer les outils d'IA pour chaque app Craft
 	Set up {name}	Configurer {name}
@@ -441,6 +444,10 @@ filter	Installed	Installées
 	{file}, {size}, from {host}	{file}, {size}, depuis {host}
 	{model} (this computer)	{model} (cet ordinateur)
 	Files in place	Fichiers en place
+	Check and use model	Vérifier et utiliser le modèle
+	Checking model files...	Vérification des fichiers du modèle...
+	Files checked. Model added for this tool.	Fichiers vérifiés. Modèle ajouté pour cet outil.
+	Files checked. Earlier model choice kept.	Fichiers vérifiés. Le choix de modèle précédent est conservé.
 	Planned for	Prévu pour
 	Model files installed. The app tool is not connected yet.	Fichiers du modèle installés. L'outil dans l'app n'est pas encore connecté.
 # History page.
@@ -493,3 +500,77 @@ filter	Installed	Installées
 	By model	Par modèle
 	By app	Par app
 	Average	Moyenne
+
+	Runs on this computer	Fonctionne sur cet ordinateur
+	No models found yet	Aucun modèle trouvé pour l’instant
+@plural	{n} model|{n} models	{n} modèle|{n} modèles
+
+# Capability-first AI setup and tool descriptions
+	AI tools	Outils d’IA
+	ArtCraft Launcher cannot use this option yet.	ArtCraft Launcher ne peut pas encore utiliser cette option.
+	Available in {app}: {tool}	Disponible dans {app} : {tool}
+	Choose the model each AI tool uses, then check that it works.	Choisissez le modèle de chaque outil d’IA, puis vérifiez qu’il fonctionne.
+	Connect a service	Connecter un service
+	Connect another service	Connecter un autre service
+	Planned for {app}: {tool}	Prévu pour {app} : {tool}
+	Suggested for {app}: {tool}	Suggéré pour {app} : {tool}
+	The local service for these files was not found.	Le service local nécessaire à ces fichiers est introuvable.
+	Add a folder	Ajouter un dossier
+	Checking model folders...	Vérification des dossiers de modèles...
+	Choose where new model files should go. Existing files stay where they are.	Choisissez où enregistrer les nouveaux fichiers de modèles. Les fichiers existants restent à leur emplacement.
+	Default folder changed.	Le dossier par défaut a été modifié.
+	Default for new downloads	Dossier par défaut pour les nouveaux téléchargements
+	Folder added.	Le dossier a été ajouté.
+	Folder checked again.	Le dossier a été vérifié à nouveau.
+	Folder removed from the list. Its files were not deleted.	Le dossier a été retiré de la liste. Ses fichiers n’ont pas été supprimés.
+	Folders	Dossiers
+	Installed. The files are ready to test.	Installé. Les fichiers sont prêts à être testés.
+	Make default	Définir par défaut
+	No folders yet. Add one to choose where model files are saved.	Aucun dossier pour le moment. Ajoutez-en un pour choisir où enregistrer les fichiers de modèles.
+	Read-only	Lecture seule
+	Rescan	Analyser à nouveau
+	That folder could not be changed. Check that it is available, then try again.	Impossible de modifier ce dossier. Vérifiez qu’il est disponible, puis réessayez.
+	Updating folders...	Mise à jour des dossiers...
+	Choose a folder for model files	Choisissez un dossier pour les fichiers de modèles
+	This model cannot be used by a Craft app yet.	Aucune application Craft ne peut encore utiliser ce modèle.
+	Select subject	Sélectionner le sujet
+	Remove background	Supprimer l’arrière-plan
+	Remove objects	Supprimer des objets
+	Generative fill	Remplissage génératif
+	Generative expand	Extension générative
+	Extend sequence	Prolonger la séquence
+	Generate images	Générer des images
+	Generate video	Générer une vidéo
+	Pick out the main subject, or anything you describe in words, and turn it into a selection or a mask.	Détourez le sujet principal, ou tout élément décrit, pour en faire une sélection ou un masque.
+	Cut the subject out and leave the background transparent.	Détourez le sujet et rendez l’arrière-plan transparent.
+	Mark something and the area fills in to match its surroundings.	Marquez un élément pour remplir la zone en harmonie avec son environnement.
+	Select an area, describe what should be there, and get new content that blends in.	Sélectionnez une zone, décrivez ce qui doit s’y trouver et obtenez un contenu intégré à l’image.
+	Make the canvas bigger and fill the new area to match the picture.	Agrandissez la zone de travail et remplissez-la en harmonie avec l’image.
+	Add frames to the end of a clip so the shot carries on.	Ajoutez des images à la fin d’un clip pour prolonger la séquence.
+	Make a picture from a description.	Créez une image à partir d’une description.
+	Make a clip from a description.	Créez un clip à partir d’une description.
+	Select Subject and Object Selection	Sélection du sujet et des objets
+	Subject, sky and people masks	Masques du sujet, du ciel et des personnes
+	Roto and matte	Rotoscopie et cache
+	Remove Background	Supprimer l’arrière-plan
+	Remove tool	Outil de suppression
+	Generative remove	Suppression générative
+	Generative Fill	Remplissage génératif
+	Generative Expand	Extension générative
+	Generative video	Vidéo générative
+	Generate Image	Générer une image
+	Image generation	Génération d’images
+	Slide images	Images pour diapositives
+	Run with	Exécuter avec
+	Inside this app	Dans cette application
+	This model is not available with every option.	Ce modèle n’est pas disponible avec toutes les options.
+
+# Runtime settings in Advanced.
+	Engines	Moteurs
+	Choose where a local model runs. Options that cannot use it are unavailable.	Choisissez où exécuter un modèle local. Les options incompatibles ne sont pas disponibles.
+	Choose a local model to set where it runs.	Choisissez un modèle local pour définir où il s’exécute.
+	Setup only	Installation seule
+	Models marked Setup only can be installed, but no Craft app can use them yet.	Les modèles marqués « Installation seule » peuvent être installés, mais aucune application Craft ne peut encore les utiliser.
+	Licences of what this uses	Licences de ce que cela utilise
+	Where the publisher says so	Où l'éditeur l'indique
+	This is what each publisher says about its terms. ArtCraft has not checked it, it is not legal advice, and ArtCraft gives no warranty or indemnity for any model, add-on or result. Whether it suits your use, including commercial use, is your decision.	Voici ce que chaque éditeur indique sur ses conditions. ArtCraft ne l'a pas vérifié, ce n'est pas un avis juridique, et ArtCraft n'offre aucune garantie ni indemnisation pour un modèle, un module ou un résultat. C'est à vous de décider s'il convient à votre usage, y compris commercial.
