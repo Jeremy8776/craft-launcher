@@ -9,7 +9,8 @@
 param(
   [Parameter(Mandatory = $true)][string] $Root,
   [Parameter(Mandatory = $true)][string] $ServiceExe,
-  [Parameter(Mandatory = $true)][string] $InstallTest
+  [Parameter(Mandatory = $true)][string] $InstallTest,
+  [switch] $SkipInstallTest
 )
 $ErrorActionPreference = 'Continue'
 $Log = Join-Path $Root 'elevated-results.txt'
@@ -30,18 +31,21 @@ try {
 
   # ---- Part 1 ----
   Log 'PART 1: per-machine update with the real command line'
-  $env:E2E_MSI_DIR = Join-Path $Root 'msi'
-  $out = & $InstallTest --ignored --nocapture --test-threads=1 2>&1
-  $code = $LASTEXITCODE
-  $out | ForEach-Object { Log "  | $_" }
-  Log "PART1 exit=$code"
+  if ($SkipInstallTest) { Log 'skipped (already passed)' } else {
+    $env:E2E_MSI_DIR = Join-Path $Root 'msi'
+    $out = & $InstallTest --ignored --nocapture --test-threads=1 2>&1
+    $code = $LASTEXITCODE
+    $out | ForEach-Object { Log "  | $_" }
+    Log "PART1 exit=$code"
+  }
 
   # ---- Part 2 ----
   Log 'PART 2: the real service under LocalSystem'
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
   Copy-Item -LiteralPath $ServiceExe -Destination (Join-Path $Dir 'artcraft-updater-service.exe') -Force
-  $created = & sc.exe create $Svc binPath= "`"$Dir\artcraft-updater-service.exe`" run" start= demand obj= LocalSystem 2>&1
-  Log "sc create: $created"
+  $bin = '"' + $Dir + '\artcraft-updater-service.exe" run'
+  $created = New-Service -Name $Svc -BinaryPathName $bin -DisplayName 'ArtCraft Updater (test)' -StartupType Manual
+  Log "New-Service: $($created.Name) $($created.Status)"
   $started = & sc.exe start $Svc 2>&1
   Log "sc start: $($started -join ' ')"
   $running = WaitFor { (Get-Service $Svc -ErrorAction SilentlyContinue).Status -eq 'Running' } 30

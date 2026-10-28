@@ -53,7 +53,19 @@ Built and tested, **not yet run as a real service or against a real install on a
 | Real named pipe: round trip, refusals, silent client, half frame, oversize, one at a time | `pipe/tests.rs` |
 | Startup rules: Program Files only, staging not a link | `service/tests.rs` |
 | 25 mutants of those guards, all killed | `mutation-check.py` |
-| **Not run:** the service under SYSTEM, the pipe ACL against a normal user, a real per-machine update | `e2e/` (needs one elevated run) |
+| **Elevated run 1:** the engine's real `msiexec` line updated a renamed per-machine product 1.2.2 to 1.2.3, and a downgrade was refused by Windows Installer (1603); cleaned up | `tests/elevated_install.rs` |
+| **Elevated run 2:** the real service ran as `NT AUTHORITY\SYSTEM`; staging inherited the Program Files ACL (Users read-only); a normal user could not write to the service folder, staging or the exe, nor stop the service; refusals came back in plain words; the real machine-wide records and a real HTTPS fetch worked as SYSTEM; the audit log matched; service removed cleanly | `e2e/` |
+| **Not run:** a real update of a real app, a second Windows account | needs a real newer signed release and another user |
+
+## Open finding: install folder of machine-registered apps
+
+On the development PC every app has a machine-wide Windows Installer record, but its files are in
+the user's profile (`%LOCALAPPDATA%\Programs\ArtCraft\<App>`), and the folder is recorded only
+under `HKCU\SOFTWARE\<App>\InstallDir`. The service runs as SYSTEM and cannot read that hive, and
+the engine's command line passes no `INSTALLFOLDER`. What the app MSIs do with an update run like
+that is **not proven**: it may relocate the app to the default Program Files folder. Until it is
+proven, the safe rule is to update only apps whose machine-registered folder is known and inside
+Program Files, and leave everything else to the launcher's existing (UAC) route.
 
 ## Not built yet
 

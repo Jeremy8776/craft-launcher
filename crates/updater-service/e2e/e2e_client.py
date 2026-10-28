@@ -25,17 +25,19 @@ check("client is NOT elevated", "High Mandatory Level" not in groups and "S-1-16
 
 # 2. Requests over the real pipe (the Rust client in tests/e2e_client.rs prints one JSON line each).
 done = subprocess.run([str(EXE), "--ignored", "--nocapture", "--test-threads=1"], capture_output=True, text=True, timeout=120)
-replies = [json.loads(l[len("REPLY "):]) for l in done.stdout.splitlines() if l.startswith("REPLY ")]
+replies = [json.loads(l[l.index("REPLY ") + 6:]) for l in done.stdout.splitlines() if "REPLY " in l]
 check("client test program ran", done.returncode == 0, done.stdout[-300:] + done.stderr[-300:] if done.returncode else "")
 by = {r["label"]: r["reply"] for r in replies}
 text = lambda label: json.dumps(by.get(label, {}))
-check("per-user-only app is 'not installed for all users'", "not installed for all users" in text("not-installed"), text("not-installed"))
+# Every Craft app on a PC that used the launcher has a machine-wide Windows Installer record, so a far-future
+# version passes the installed/newer rules and is stopped at the fetch (no such release on GitHub).
+check("machine-wide app, far-future version: passes the rules, stopped at fetch", "has no release" in text("not-installed"), text("not-installed"))
 check("unknown app refused", "not part of the Craft App Suite" in text("unknown-app"), text("unknown-app"))
 check("the launcher itself refused", "not part of the Craft App Suite" in text("launcher"), text("launcher"))
 check("garbage refused", "not understood" in text("garbage"), text("garbage"))
 check("extra field (a path) refused", "not understood" in text("path-field"), text("path-field"))
 check("oversize refused", "too large" in text("oversize"), text("oversize"))
-check("service still answers after the bad ones", "not installed for all users" in text("after"), text("after"))
+check("service still answers after the bad ones", "has no release" in text("after"), text("after"))
 
 # 3. A normal user can't write where the checks depend on it.
 for label, target in (("service folder", DIR), ("staging folder", DIR / "staging")):
