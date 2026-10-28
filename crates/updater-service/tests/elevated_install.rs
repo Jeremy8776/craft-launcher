@@ -19,6 +19,7 @@ use artcraft_launcher_updater_service::engine::{Engine, Fetched, Fetcher};
 use artcraft_launcher_updater_service::error::{Outcome, Refusal};
 use artcraft_launcher_updater_service::install::SystemRunner;
 use artcraft_launcher_updater_service::machine::{Installed, Machine, Registry};
+use artcraft_launcher_updater_service::package::{MsiFiles, PackageInfo, Packages};
 use artcraft_launcher_updater_service::publisher::{SignatureCheck, Signatures};
 
 /// The product codes `build_msis.py` gives the test MSIs.
@@ -53,6 +54,16 @@ struct SignedByUs;
 impl Signatures for SignedByUs {
     fn check(&self, _: &Path) -> SignatureCheck {
         SignatureCheck::Valid { organization: Some("Learning Machines Inc".into()) }
+    }
+}
+
+/// The test product is not a real Craft App, so it reports a real one's name and maker. The version
+/// is read from the real installer, which also exercises the real reader on a WiX-built package.
+struct Genuine;
+impl Packages for Genuine {
+    fn read(&self, file: &Path) -> Result<PackageInfo, String> {
+        let real = MsiFiles.read(file)?;
+        Ok(PackageInfo { product_name: "CADCraft".into(), manufacturer: "Learning Machines LLC".into(), product_version: real.product_version })
     }
 }
 
@@ -128,6 +139,7 @@ fn updates_a_per_machine_install_with_the_real_command_line() {
             machine: &machine,
             fetcher: &fetch,
             signatures: &signer,
+            packages: &Genuine,
             runner: &SystemRunner,
         };
         engine.handle(body)

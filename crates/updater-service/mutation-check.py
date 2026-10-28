@@ -2,7 +2,8 @@
 
 Breaks one guard at a time, runs the crate's tests, and expects them to FAIL (the mutant is
 "killed"). Restores every file from a backup afterwards, even on error. Run exclusively: it
-edits source files in place.
+edits source files in place. Extra arguments after the repo root run only the mutants whose
+label contains one of them (`mutation-check.py <root> installer`).
 """
 import pathlib
 import shutil
@@ -10,6 +11,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(sys.argv[1])
+ONLY = sys.argv[2:]
 SRC = ROOT / "crates" / "updater-service" / "src"
 CLIENT = ROOT / "crates" / "updater-client" / "src"
 
@@ -57,6 +59,9 @@ MUTANTS = [
     ("stage.rs", "dir != root && dir.starts_with(&root) && dir.is_dir()", "true", "folder containment check removed"),
     ("install.rs", "let text = text.trim_end_matches('\\\\');", "let text = &*text;", "trailing backslash not trimmed"),
     ("wire.rs", "Err(Refusal::Declined(why)) => Reply::Declined { reason: why.clone() },", "", "decline not told apart from a refusal"),
+    ("engine.rs", "        require_identity(request.app, &request.version, &inside)?;\n", "", "installer identity check skipped"),
+    ("package.rs", "if !app.is_installer_package(&info.product_name, &info.manufacturer) {", "if false {", "installer name and maker check removed"),
+    ("package.rs", "if same == Ordering::Equal { Ok(()) }", "if true { Ok(()) }", "installer version check removed"),
     ("service.rs", "meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0 || !meta.is_dir()", "false", "staging link check removed"),
 ]
 
@@ -73,6 +78,8 @@ results = []
 backups = {}
 try:
     for f, old, new, label in MUTANTS:
+        if ONLY and not any(word in label for word in ONLY):
+            continue
         path = where(f)
         raw = path.read_bytes()
         crlf = b"\r\n" in raw

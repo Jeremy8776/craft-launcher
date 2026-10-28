@@ -14,6 +14,7 @@ use artcraft_launcher_core::release::{download_prefix, download_url_under, parse
 use artcraft_launcher_native::http::{Http, Stop};
 
 use crate::engine::{Fetched, Fetcher};
+use crate::stage::MAX_PACKAGE_BYTES;
 
 /// Where releases come from. Always GitHub, except in tests and `local-mirror` builds.
 enum Origin {
@@ -30,13 +31,20 @@ pub struct GitHubFetcher {
 
 impl GitHubFetcher {
     pub fn new() -> Result<Self, String> {
-        Ok(Self { http: Http::new()?, origin: Origin::GitHub })
+        Ok(Self { http: Self::http()?, origin: Origin::GitHub })
     }
 
     /// Reads releases from a loopback server at `base` instead. Tests only.
     #[cfg(any(test, feature = "local-mirror"))]
     pub fn with_mirror(base: &str) -> Result<Self, String> {
-        Ok(Self { http: Http::new()?, origin: Origin::Mirror(base.to_string()) })
+        Ok(Self { http: Self::http()?, origin: Origin::Mirror(base.to_string()) })
+    }
+
+    /// The release sums list no sizes, so the download has no listed size to check against. Cap it
+    /// at the biggest package the service will hash, so an oversized file is refused before it
+    /// lands in staging instead of after.
+    fn http() -> Result<Http, String> {
+        Ok(Http::new()?.with_max_download(MAX_PACKAGE_BYTES))
     }
 
     fn prefix(&self, repo: &str) -> String {

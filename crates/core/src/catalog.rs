@@ -5,6 +5,9 @@
 //! Text here is English, the source the UI translates from: each `tagline` has a catalog row
 //! keyed by the app id (`tr_ctx(app.id, app.tagline)` in `ui-egui`).
 
+/// Who our Windows Installer packages name as their publisher (`Manufacturer`).
+pub const INSTALLER_PUBLISHER: &str = "Learning Machines LLC";
+
 /// One app in the suite.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CraftApp {
@@ -55,6 +58,14 @@ impl CraftApp {
     /// Display names this app's installers may have registered, current first.
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         std::iter::once(self.name).chain(self.former_names.iter().copied())
+    }
+
+    /// Whether a Windows installer's product name and publisher are this app's, under any name its
+    /// installers have registered. The launcher uses it on uninstall entries (`DisplayName`,
+    /// `Publisher`) and the updater service on a downloaded installer's own `ProductName` and
+    /// `Manufacturer`, which are the same two values, so "this is CADCraft" means one thing.
+    pub fn is_installer_package(&self, product_name: &str, publisher: &str) -> bool {
+        publisher == INSTALLER_PUBLISHER && self.names().any(|n| n == product_name)
     }
 
     pub fn by_id(id: &str) -> Option<&'static CraftApp> {

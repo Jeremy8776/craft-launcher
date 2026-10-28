@@ -9,6 +9,7 @@ use artcraft_launcher_core::CraftApp;
 use super::*;
 use crate::install::Command;
 use crate::machine::Installed;
+use crate::package::PackageInfo;
 use crate::publisher::SignatureCheck;
 
 const PUBLISHER: &str = "Learning Machines Inc";
@@ -41,6 +42,26 @@ impl Signatures for Signer {
     fn check(&self, _: &Path) -> SignatureCheck {
         self.0.clone()
     }
+}
+
+/// What the staged installer says it is, as a scripted answer; counts how often it was asked.
+struct Inside {
+    answer: Result<PackageInfo, String>,
+    reads: RefCell<usize>,
+}
+impl Packages for Inside {
+    fn read(&self, _: &Path) -> Result<PackageInfo, String> {
+        *self.reads.borrow_mut() += 1;
+        self.answer.clone()
+    }
+}
+fn inside(name: &str, maker: &str, version: &str) -> Inside {
+    let info = PackageInfo { product_name: name.into(), manufacturer: maker.into(), product_version: version.into() };
+    Inside { answer: Ok(info), reads: RefCell::new(0) }
+}
+/// The installer the good fetch delivers: CADCraft 1.2.3 from our publisher.
+fn genuine() -> Inside {
+    inside("CADCraft", "Learning Machines LLC", "1.2.3")
 }
 
 /// A stand-in for Program Files that every test shares: created once, never removed.
@@ -93,6 +114,17 @@ fn run(request: &[u8], fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Re
 }
 
 fn run_on(request: &[u8], machine: &dyn Machine, fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Result<Outcome, Refusal>, usize) {
+    run_with(request, machine, fetch, signer, &genuine(), code)
+}
+
+fn run_with(
+    request: &[u8],
+    machine: &dyn Machine,
+    fetch: &Fetch,
+    signer: &Signer,
+    packages: &Inside,
+    code: Option<i32>,
+) -> (Result<Outcome, Refusal>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let staging = dir.path().join("staging");
     std::fs::create_dir_all(&staging).unwrap();
@@ -105,6 +137,7 @@ fn run_on(request: &[u8], machine: &dyn Machine, fetch: &Fetch, signer: &Signer,
         machine,
         fetcher: fetch,
         signatures: signer,
+        packages,
         runner: &runner,
     };
     let result = engine.handle(request);
@@ -160,6 +193,7 @@ fn the_command_names_only_the_staged_file() {
         machine: &Mach(Some("1.2.2")),
         fetcher: &fetch,
         signatures: &signer,
+        packages: &genuine(),
         runner: &runner,
     };
     engine.handle(REQUEST).unwrap();
@@ -246,6 +280,50 @@ fn nothing_runs_when_unsigned_or_signed_by_someone_else() {
         assert!(matches!(result, Err(Refusal::WrongPublisher(_))), "{org}");
         assert_eq!(started, 0);
     }
+}
+
+#[test]
+fn nothing_runs_for_another_product_signed_by_the_same_publisher() {
+    // Right file name, right checksum, right signer, but the installer inside is another app's, or
+    // another version, or says nothing: the case the file name alone cannot catch.
+    let wrong = [
+        (
+            "another app",
+            Ok(PackageInfo { product_name: "DeckCraft".into(), manufacturer: "Learning Machines LLC".into(), product_version: "1.2.3".into() }),
+        ),
+        (
+            "the launcher",
+            Ok(PackageInfo {
+                product_name: "ArtCraft Launcher".into(),
+                manufacturer: "Learning Machines LLC".into(),
+                product_version: "1.2.3".into(),
+            }),
+        ),
+        ("another maker", Ok(PackageInfo { product_name: "CADCraft".into(), manufacturer: "Someone Else".into(), product_version: "1.2.3".into() })),
+        (
+            "an older version",
+            Ok(PackageInfo { product_name: "CADCraft".into(), manufacturer: "Learning Machines LLC".into(), product_version: "1.2.2".into() }),
+        ),
+        ("not an installer", Err("not a Windows Installer package".to_string())),
+    ];
+    for (label, answer) in wrong {
+        let packages = Inside { answer, reads: RefCell::new(0) };
+        let (result, started) = run_with(REQUEST, &Mach(Some("1.2.2")), &good(), &signed_by(PUBLISHER), &packages, Some(0));
+        assert_eq!((result, started), (Err(Refusal::WrongPackage), 0), "{label}");
+    }
+}
+
+#[test]
+fn an_installer_is_only_opened_once_its_signature_is_accepted() {
+    for signer in [Signer(SignatureCheck::Invalid("no signature".into())), signed_by("Microsoft Corporation")] {
+        let packages = genuine();
+        let (result, started) = run_with(REQUEST, &Mach(Some("1.2.2")), &good(), &signer, &packages, Some(0));
+        assert!(result.is_err());
+        assert_eq!((started, *packages.reads.borrow()), (0, 0));
+    }
+    let packages = genuine();
+    run_with(REQUEST, &Mach(Some("1.2.2")), &good(), &signed_by(PUBLISHER), &packages, Some(0)).0.unwrap();
+    assert_eq!(*packages.reads.borrow(), 1);
 }
 
 #[test]

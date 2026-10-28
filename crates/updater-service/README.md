@@ -29,13 +29,19 @@ argument field exists, and an extra field is refused.
 7. SHA-256 must equal the release's `SHA256SUMS.txt` entry.
 8. Authenticode must verify (WinTrust, with revocation checking) and the signer `O=` must be
    exactly `Learning Machines Inc` (`wintrust.rs`, `publisher.rs`).
-9. Run a fixed `msiexec /i <file> /qn /norestart /l*v <log> ALLUSERS=1`.
+9. The installer's own `ProductName`, `Manufacturer` and `ProductVersion` (read with the `msi`
+   crate, only after the signature is accepted) must be the app's at the requested version
+   (`package.rs`). The name, checksum and signature say who made the file, not which product it
+   installs.
+10. Run a fixed `msiexec /i <file> /qn /norestart /l*v <log> ALLUSERS=1`.
 
 ## Where it runs (`service.rs`, `pipe.rs`)
 
 - The service refuses to start unless its exe is inside Program Files, whose default ACL only lets
   SYSTEM, Administrators and TrustedInstaller write. Its `staging` folder inherits that, which is
-  what makes "check, then install" safe. It also refuses a `staging` that is a link.
+  what makes "check, then install" safe. It also refuses a `staging` that is a link. The service
+  relies on that Windows default and does not read the ACL: an administrator who loosens the
+  Program Files ACL turns "check, then install" back into a race.
 - The pipe is local only, with the descriptor `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)`:
   SYSTEM and Administrators full, interactive users read/write, nobody else.
 - Each connection is read on its own thread with a deadline, so a silent client can't hold up

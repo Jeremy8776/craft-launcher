@@ -1,9 +1,14 @@
 //! The service's staging folder: where a package must be, and that it is what the release says.
 //!
-//! The folder is created by the service's own installer with an ACL that only SYSTEM and
-//! Administrators can write to. That is what makes "check, then install" safe: nothing a normal
-//! user runs can swap the file between the check and `msiexec`. Without that ACL these checks
-//! would be a race, so the service must refuse to start when it can't confirm the ACL.
+//! The folder sits beside the service program, inside Program Files, and inherits that folder's
+//! ACL: by default only SYSTEM, Administrators and TrustedInstaller can write there. That is what
+//! makes "check, then install" safe: nothing a normal user runs can swap the file between the
+//! check and `msiexec`.
+//!
+//! The service sets no ACL of its own and does not read the one it inherited. It refuses to run
+//! from outside Program Files and refuses a `staging` that is a link (`service::staging_dir`),
+//! but on a PC where an administrator has loosened the Program Files ACL, "check, then install"
+//! becomes a race again. Relying on the Windows default is the decision; it is not verified.
 
 use std::fs::File;
 use std::io::Read;

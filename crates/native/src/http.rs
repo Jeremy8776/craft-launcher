@@ -38,6 +38,8 @@ pub struct Http {
     direct: ureq::Agent,
     direct_download: ureq::Agent,
     token: Option<String>,
+    /// The most a single download may be, whatever the server says. See [`Http::with_max_download`].
+    max_download: u64,
 }
 
 /// Why ArtCraft's release feed couldn't be read.
@@ -127,7 +129,16 @@ impl Http {
         // An optional token raises GitHub's limit from 60 to 5000 requests an hour. Only ever sent
         // to api.github.com.
         let token = std::env::var("ARTCRAFT_LAUNCHER_GITHUB_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        Ok(Self { small, feed, no_redirect, download, direct, direct_download, token })
+        Ok(Self { small, feed, no_redirect, download, direct, direct_download, token, max_download: MAX_DOWNLOAD })
+    }
+
+    /// Lowers the most one download may be. A file the server says is bigger is refused before
+    /// anything is saved, and a body that runs past it is cut off. For callers that know no
+    /// legitimate file is that big but have no listed size to check against (the updater service).
+    #[must_use]
+    pub fn with_max_download(mut self, bytes: u64) -> Self {
+        self.max_download = bytes.min(MAX_DOWNLOAD);
+        self
     }
 
     /// GET a GitHub API resource, revalidating with `etag` when given.
@@ -350,7 +361,10 @@ impl Http {
         {
             return Err(AttemptError::Fatal(format!("unexpected Content-Encoding '{enc}' on binary artifact download")));
         }
-        let limit = if total > 0 { total } else { MAX_DOWNLOAD };
+        if total > self.max_download {
+            return Err(AttemptError::Fatal(format!("the file is {total} bytes, more than the {} this download may be", self.max_download)));
+        }
+        let limit = if total > 0 { total } else { self.max_download };
         let appends = status == 206 && start == have;
         if appends && have > limit {
             return Err(AttemptError::Fatal(format!("the download exceeds the permitted size of {limit} bytes")));
@@ -805,6 +819,27 @@ pub(crate) mod tests {
         let (url, _) = serve(body.clone(), vec![Reply::Full]);
         let err = http.get_bytes(&url, body.len() - 1).unwrap_err();
         assert!(err.contains("more than"), "{err}");
+    }
+
+    #[test]
+    fn a_file_over_the_download_cap_is_refused_before_it_is_saved() {
+        let (body, sha) = body();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        // No listed size (0), as the updater service downloads: only the cap can stop it.
+        let capped = Http::new().unwrap().with_max_download(body.len() as u64 - 1);
+        let (url, _) = serve(body.clone(), vec![Reply::Full]);
+        let err = capped.download(&url, &dest, 0, &sha, &Stop::default(), &mut |_| {}).unwrap_err();
+        assert!(err.contains("may be"), "{err}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing may be left behind");
+
+        // A cap of exactly the file's size is fine, and the default cap is not lowered by accident.
+        let exact = Http::new().unwrap().with_max_download(body.len() as u64);
+        let (url, _) = serve(body.clone(), vec![Reply::Full]);
+        exact.download(&url, &dest, 0, &sha, &Stop::default(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert_eq!(Http::new().unwrap().max_download, MAX_DOWNLOAD);
+        assert_eq!(Http::new().unwrap().with_max_download(u64::MAX).max_download, MAX_DOWNLOAD);
     }
 
     #[test]

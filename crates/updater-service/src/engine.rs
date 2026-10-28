@@ -9,6 +9,7 @@ use artcraft_launcher_core::version;
 use crate::error::{Outcome, Refusal};
 use crate::install::{Runner, interpret, msi_command};
 use crate::machine::Machine;
+use crate::package::{Packages, require_identity};
 use crate::publisher::{Signatures, require_publisher};
 use crate::request::{self, InstallRequest};
 use crate::stage::{dir_inside, locate, same_checksum, sha256_hex};
@@ -36,6 +37,9 @@ pub struct Engine<'a> {
     pub machine: &'a dyn Machine,
     pub fetcher: &'a dyn Fetcher,
     pub signatures: &'a dyn Signatures,
+    /// Reads the staged installer's own product name and version. Called only after the signature
+    /// has been accepted, so only a file our publisher signed is ever parsed.
+    pub packages: &'a dyn Packages,
     pub runner: &'a dyn Runner,
 }
 
@@ -64,6 +68,10 @@ impl Engine<'_> {
             return Err(Refusal::HashMismatch);
         }
         require_publisher(self.signatures.check(&staged))?;
+        // The name, checksum and signature say who made the file, not which product it installs.
+        // A different Craft App's installer, signed by us and renamed, would pass all three.
+        let inside = self.packages.read(&staged).map_err(|_| Refusal::WrongPackage)?;
+        require_identity(request.app, &request.version, &inside)?;
 
         let command = msi_command(self.msiexec, &staged, Some(folder))?;
         let code = self.runner.run(&command).map_err(Refusal::Fetch)?;

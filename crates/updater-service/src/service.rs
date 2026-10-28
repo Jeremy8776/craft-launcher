@@ -18,6 +18,7 @@ use crate::fetch::GitHubFetcher;
 use crate::install::SystemRunner;
 use crate::journal::Journal;
 use crate::machine::Registry;
+use crate::package::MsiFiles;
 use crate::pipe::{self, AnyCaller, Config};
 use crate::request;
 use crate::wintrust::WinTrust;
@@ -93,6 +94,7 @@ fn serve(exe: &Path, journal: &Journal, stop: &AtomicBool, running: impl FnOnce(
         machine: &Registry,
         fetcher: &fetcher,
         signatures: &trust,
+        packages: &MsiFiles,
         runner: &SystemRunner,
     };
     clean(&staging);

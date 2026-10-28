@@ -18,6 +18,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }
 sha2 = "0.10"
+# Reads an installer's own product name, maker and version (pure Rust, nothing is run). MIT.
+msi = "0.10"
 # Resolves junctions/symlinks the same way the launcher's own installer does (a no-op off Windows).
 dunce = "1"
 
