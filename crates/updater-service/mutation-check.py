@@ -1,0 +1,77 @@
+"""Mutation check for the updater-service spike.
+
+Breaks one guard at a time, runs the crate's tests, and expects them to FAIL (the mutant is
+"killed"). Restores every file from a backup afterwards, even on error. Run exclusively: it
+edits source files in place.
+"""
+import pathlib
+import shutil
+import subprocess
+import sys
+
+ROOT = pathlib.Path(sys.argv[1])
+SRC = ROOT / "crates" / "updater-service" / "src"
+
+# (file, old text, new text, what it breaks)
+MUTANTS = [
+    ("publisher.rs", "Some(org) if PUBLISHER_ORGANISATIONS.contains(&org.as_str()) => Ok(()),",
+     "Some(org) if PUBLISHER_ORGANISATIONS.iter().any(|p| org.contains(p)) => Ok(()),", "publisher match: exact -> contains"),
+    ("publisher.rs", "None => Err(Refusal::WrongPublisher(\"an unnamed publisher\".into())),",
+     "None => Ok(()),", "unnamed publisher accepted"),
+    ("publisher.rs", "SignatureCheck::Invalid(why) => Err(Refusal::Unsigned(why)),",
+     "SignatureCheck::Invalid(_) => Ok(()),", "invalid signature accepted"),
+    ("engine.rs", "        require_publisher(self.signatures.check(&staged))?;\n", "", "signature check skipped"),
+    ("engine.rs", "        if !same_checksum(&sha256_hex(&staged)?, &fetched.expected_sha256) {\n            return Err(Refusal::HashMismatch);\n        }\n",
+     "", "checksum check skipped"),
+    ("engine.rs", "        require_package_for(&request, &staged)?;\n", "", "package-name binding skipped"),
+    ("engine.rs", "name == format!(\"{stem}-{}-windows-{arch}.msi\", request.version)",
+     "name.starts_with(&format!(\"{stem}-\"))", "package-name binding loosened to prefix"),
+    ("stage.rs", "if resolved == root || !resolved.starts_with(&root) {", "if resolved == root {", "staging-root containment removed"),
+    ("stage.rs", "expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()) && expected.eq_ignore_ascii_case(actual)",
+     "expected.eq_ignore_ascii_case(actual) || expected.is_empty()", "checksum compare loosened"),
+    ("request.rs", "#[serde(deny_unknown_fields)]\n", "", "unknown request fields allowed"),
+    ("request.rs", "SUITE.iter().find(|a| a.id == wire.app)",
+     "SUITE.iter().find(|a| a.id == wire.app).or(Some(&artcraft_launcher_core::catalog::LAUNCHER))", "launcher id accepted"),
+    ("request.rs", "if bytes.len() > MAX_REQUEST_BYTES {", "if false {", "request size cap removed"),
+    ("install.rs", "\"ALLUSERS=1\".into(),", "\"ALLUSERS=1\".into(),\n            \"REBOOT=Force\".into(),", "extra installer property"),
+    ("install.rs", "if text.chars().any(|c| c == '\"' || c.is_control()) {", "if false {", "quote/control check removed"),
+]
+
+
+def run_tests():
+    p = subprocess.run(
+        ["cargo", "test", "-p", "artcraft-launcher-updater-service", "-j", "8"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    return p.returncode, p.stdout + p.stderr
+
+
+results = []
+backups = {}
+try:
+    for f, old, new, label in MUTANTS:
+        path = SRC / f
+        text = path.read_text(encoding="utf-8")
+        if text.count(old) != 1:
+            results.append((label, "PATTERN NOT FOUND/UNIQUE"))
+            continue
+        backups.setdefault(f, text)
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        code, out = run_tests()
+        path.write_text(text, encoding="utf-8")
+        if code == 0:
+            results.append((label, "SURVIVED"))
+        elif "error[E" in out or "could not compile" in out:
+            results.append((label, "DID NOT COMPILE"))
+        else:
+            failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith("test ") and l.endswith("FAILED")})
+            results.append((label, "killed by " + ", ".join(failed)[:110]))
+finally:
+    for f, text in backups.items():
+        (SRC / f).write_text(text, encoding="utf-8")
+
+for label, status in results:
+    print(f"{status:<14.14} | {label}" if status in ("SURVIVED", "DID NOT COMPILE") or status.startswith("PATTERN") else f"killed         | {label}  <- {status[10:]}")
+bad = [r for r in results if not r[1].startswith("killed")]
+print("\nsurvivors/problems:", len(bad), "of", len(results))
+sys.exit(1 if bad else 0)

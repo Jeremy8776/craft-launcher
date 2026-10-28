@@ -1,0 +1,27 @@
+[package]
+name = "artcraft-launcher-updater-service"
+description = "ArtCraft updater service engine: installs signed Craft App updates for per-machine installs without a UAC prompt per update (spike)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+artcraft-launcher-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+sha2 = "0.10"
+# Resolves junctions/symlinks the same way the launcher's own installer does (a no-op off Windows).
+dunce = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Authenticode checks through WinTrust (already used by the launcher's native crate).
+verifysign = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -351,6 +351,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "artcraft-launcher-updater-service"
+version = "0.9.0"
+dependencies = [
+ "artcraft-launcher-core",
+ "dunce",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "verifysign",
+]
+
+[[package]]
 name = "artcraft-launcher-web"
 version = "0.9.0"
 dependencies = [
