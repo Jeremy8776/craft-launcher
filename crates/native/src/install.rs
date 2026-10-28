@@ -628,6 +628,9 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
         _ if cfg!(target_os = "macos") && path.extension().is_some_and(|e| e == "app") => process::open(path.as_os_str()),
         _ => {
             if !path.exists() {
+                if path.components().count() < 2 {
+                    return Err(format!("{} is registered with Windows, but the launcher can't find where it put the program. Reinstall it from here.", app.name));
+                }
                 return Err(format!("{} isn't where it was installed ({})", app.name, path.display()));
             }
             process::launch_binary(path, &[])

@@ -332,6 +332,12 @@ pub mod windows {
             }
             roots
         };
+        exe_in_roots(app, roots)
+    }
+
+    /// The exe under the given install roots: the `ArtCraft` suite folder first, then the bare root
+    /// (older installs).
+    pub(super) fn exe_in_roots(app: &CraftApp, roots: Vec<PathBuf>) -> Option<PathBuf> {
         let launcher_folders = suite_folders(app, &roots);
         if let Some(found) = launcher_folders.iter().find_map(|dir| exe_candidates(app, Some(dir), &[]).into_iter().find(|p| p.exists())) {
             return Some(found);
@@ -341,12 +347,28 @@ pub mod windows {
         exe_candidates(app, None, &candidates).into_iter().find(|p| p.exists())
     }
 
+    /// Last resort for opening an app whose uninstall record names no folder and whose exe is not in
+    /// the record's own scope: a per-machine record can describe files that the installer put in the
+    /// user's own `Programs` folder. This only decides which exe "Open" runs. The record's scope, which
+    /// decides how an update runs, is unchanged.
+    fn exe_in_any_scope(app: &CraftApp) -> Option<PathBuf> {
+        let mut roots: Vec<PathBuf> = std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Programs")).into_iter().collect();
+        for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Some(pf) = std::env::var_os(var).map(PathBuf::from)
+                && !roots.contains(&pf)
+            {
+                roots.push(pf);
+            }
+        }
+        exe_in_roots(app, roots)
+    }
+
     pub fn detect(app: &CraftApp) -> Option<Installed> {
         let m = msi_installs(app).into_iter().next()?;
         Some(Installed {
             version: m.version,
             source: InstallSource::Msi,
-            location: m.exe.map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
+            location: m.exe.or_else(|| exe_in_any_scope(app)).map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
             package: Some(m.product_code),
         })
     }
@@ -844,6 +866,20 @@ mod tests {
             let with_location: Vec<PathBuf> = std::iter::once(location.join(&exe)).chain(in_program_files).collect();
             assert_eq!(exe_candidates(a, Some(&location), &roots), with_location);
         }
+    }
+
+    /// An app unpacked into the suite folder of a root is found from that root alone, so "Open" works
+    /// for a record whose folder is not the one its scope would name.
+    #[cfg(windows)]
+    #[test]
+    fn an_exe_in_the_suite_folder_of_any_root_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let deck = CraftApp::by_id("deckcraft").unwrap();
+        let folder = dir.path().join("ArtCraft").join("DeckCraft");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("deckcraft.exe"), "x").unwrap();
+        assert_eq!(windows::exe_in_roots(deck, vec![dir.path().to_path_buf()]), Some(folder.join("deckcraft.exe")));
+        assert_eq!(windows::exe_in_roots(deck, vec![dir.path().join("elsewhere")]), None);
     }
 
     #[test]
