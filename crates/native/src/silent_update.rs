@@ -26,7 +26,8 @@ use crate::install::MsiScope;
 
 /// Where the answer comes from. The real one is the service's pipe; tests use a script.
 pub(crate) trait Service {
-    fn ask(&self, app_id: &str, version: &str) -> Answer;
+    /// `cancelled` is asked while the answer is awaited; when it says so the wait ends at once.
+    fn ask(&self, app_id: &str, version: &str, cancelled: &dyn Fn() -> bool) -> Answer;
 }
 
 /// The real updater service, over its named pipe.
@@ -35,8 +36,8 @@ pub(crate) struct Pipe;
 
 #[cfg(windows)]
 impl Service for Pipe {
-    fn ask(&self, app_id: &str, version: &str) -> Answer {
-        artcraft_launcher_updater_client::ask(app_id, version, &is_the_service)
+    fn ask(&self, app_id: &str, version: &str, cancelled: &dyn Fn() -> bool) -> Answer {
+        artcraft_launcher_updater_client::ask_cancellable(app_id, version, &is_the_service, cancelled)
     }
 }
 
@@ -47,27 +48,61 @@ pub(crate) fn wanted(kind: PackageKind, scope: Option<MsiScope>, is_update: bool
     is_update && kind == PackageKind::Msi && scope == Some(MsiScope::PerMachine)
 }
 
-/// Asks the service to update `app` to `release`. `true` only when the service said it finished
-/// AND `installed_version` (Windows Installer's records, read again by the caller) now shows the
-/// release's version. Anything else is logged and returns `false`.
-pub(crate) fn update(service: &dyn Service, installed_version: &dyn Fn() -> Option<Version>, app: &CraftApp, release: &Release) -> bool {
+/// What came of asking the service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Silent {
+    /// The service said it finished AND Windows Installer's records show the release's version.
+    Done,
+    /// Nothing to rely on: carry on with the normal route.
+    Normal,
+    /// The person cancelled while the launcher waited. The service was not told to stop, so it may
+    /// still finish the update: the normal route must not start a second install.
+    Cancelled,
+}
+
+impl Silent {
+    /// How the install job ends when the service has settled it: `Some(Ok)` when the update is
+    /// done, `Some(Err)` (the job's own cancelled error) when the person cancelled, and `None` when
+    /// the normal route has to run.
+    pub(crate) fn settled(self) -> Option<Result<(), String>> {
+        match self {
+            Self::Done => Some(Ok(())),
+            Self::Cancelled => Some(Err(artcraft_launcher_core::protocol::CANCELLED.to_string())),
+            Self::Normal => None,
+        }
+    }
+}
+
+/// Asks the service to update `app` to `release`. [`Silent::Done`] only when the service said it
+/// finished AND `installed_version` (Windows Installer's records, read again by the caller) now shows
+/// the release's version. `cancelled` ends the wait early. Anything else is logged.
+pub(crate) fn update(
+    service: &dyn Service,
+    installed_version: &dyn Fn() -> Option<Version>,
+    app: &CraftApp,
+    release: &Release,
+    cancelled: &dyn Fn() -> bool,
+) -> Silent {
     // The service is asked by version number. A release known only by its tag cannot be named.
     let Some(version) = release.version.as_ref() else {
-        return false;
+        return Silent::Normal;
     };
-    let answer = service.ask(app.id, &version.to_string());
+    let answer = service.ask(app.id, &version.to_string(), cancelled);
     log::info!("{}: {}", app.name, answer.describe());
+    if answer == Answer::WaitCancelled {
+        return Silent::Cancelled;
+    }
     if !answer.is_installed() {
-        return false;
+        return Silent::Normal;
     }
     // An answer is only words. Trust the machine's records instead: if they do not show the new
     // version, the normal route still has to run.
     let now = installed_version();
     if now.as_ref() != Some(version) {
         log::warn!("{}: the updater service said installed, but Windows shows {:?}; updating the normal way", app.name, now);
-        return false;
+        return Silent::Normal;
     }
-    true
+    Silent::Done
 }
 
 /// The name the updater's installer gives the service. The launcher talks to nothing else.
@@ -126,8 +161,11 @@ mod tests {
     }
 
     impl Service for Scripted {
-        fn ask(&self, app_id: &str, version: &str) -> Answer {
+        fn ask(&self, app_id: &str, version: &str, cancelled: &dyn Fn() -> bool) -> Answer {
             self.asked.borrow_mut().push((app_id.into(), version.into()));
+            if cancelled() {
+                return Answer::WaitCancelled;
+            }
             self.answer.clone()
         }
     }
@@ -158,7 +196,7 @@ mod tests {
     #[test]
     fn a_finished_update_is_reported_as_done_and_names_only_the_app_and_version() {
         let service = Scripted::says(Answer::Installed);
-        assert!(update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3")));
+        assert_eq!(update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3"), &|| false), Silent::Done);
         assert_eq!(*service.asked.borrow(), vec![("cadcraft".to_string(), "1.2.3".to_string())]);
     }
 
@@ -174,16 +212,33 @@ mod tests {
         ] {
             let service = Scripted::says(answer.clone());
             // Even if the records happened to show the new version, only "installed" counts.
-            assert!(!update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3")), "{answer:?}");
+            assert_eq!(update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3"), &|| false), Silent::Normal, "{answer:?}");
             assert_eq!(service.asked.borrow().len(), 1, "{answer:?}");
         }
+    }
+
+    #[test]
+    fn a_cancel_while_waiting_stops_the_job_and_does_not_start_a_second_install() {
+        // The service would have said "installed", but the person cancelled first: the caller's own
+        // cancel check has to reach the wait, and the result must not be the normal route.
+        let service = Scripted::says(Answer::Installed);
+        let result = update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3"), &|| true);
+        assert_eq!(result, Silent::Cancelled);
+        assert_eq!(service.asked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn only_a_normal_answer_lets_the_normal_route_run() {
+        assert_eq!(Silent::Done.settled(), Some(Ok(())));
+        assert_eq!(Silent::Cancelled.settled(), Some(Err(artcraft_launcher_core::protocol::CANCELLED.to_string())));
+        assert_eq!(Silent::Normal.settled(), None);
     }
 
     #[test]
     fn a_release_without_a_version_number_is_not_sent() {
         let service = Scripted::says(Answer::Installed);
         let tag_only = Release { tag: "nightly".into(), ..Release::default() };
-        assert!(!update(&service, &shows("1.2.3"), cadcraft(), &tag_only));
+        assert_eq!(update(&service, &shows("1.2.3"), cadcraft(), &tag_only, &|| false), Silent::Normal);
         assert!(service.asked.borrow().is_empty());
     }
 
@@ -191,9 +246,10 @@ mod tests {
     fn installed_is_not_believed_unless_windows_shows_the_new_version() {
         // A program pretending to be the service says "installed" but nothing changed.
         let liar = Scripted::says(Answer::Installed);
-        assert!(!update(&liar, &shows("1.2.2"), cadcraft(), &release("1.2.3")), "old version still installed");
-        assert!(!update(&liar, &|| None, cadcraft(), &release("1.2.3")), "app no longer found");
-        assert!(!update(&liar, &shows("1.2.4"), cadcraft(), &release("1.2.3")), "some other version");
+        let lie = |installed: &dyn Fn() -> Option<Version>| update(&liar, installed, cadcraft(), &release("1.2.3"), &|| false);
+        assert_eq!(lie(&shows("1.2.2")), Silent::Normal, "old version still installed");
+        assert_eq!(lie(&|| None), Silent::Normal, "app no longer found");
+        assert_eq!(lie(&shows("1.2.4")), Silent::Normal, "some other version");
     }
 
     #[test]

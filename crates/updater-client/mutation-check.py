@@ -27,13 +27,19 @@ M = [
     (N / "silent_update.rs", "is_update && kind == PackageKind::Msi && scope == Some(MsiScope::PerMachine)",
      "is_update && scope == Some(MsiScope::PerMachine)", "non-MSI package sent to the service", "artcraft-launcher-native"),
     (N / "silent_update.rs", "if !answer.is_installed() {", "if false {", "any answer counts as done", "artcraft-launcher-native"),
-    (N / "silent_update.rs", "service.ask(app.id, &version.to_string())", "service.ask(app.id, &release.tag)", "tag sent instead of version", "artcraft-launcher-native"),
-    (N / "silent_update.rs", "    let Some(version) = release.version.as_ref() else {\n        return false;\n    };\n",
+    (N / "silent_update.rs", "service.ask(app.id, &version.to_string(), cancelled)", "service.ask(app.id, &release.tag, cancelled)", "tag sent instead of version", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "    let Some(version) = release.version.as_ref() else {\n        return Silent::Normal;\n    };\n",
      "    let version = &release.version.clone().unwrap_or_else(|| artcraft_launcher_core::version::parse(\"0.0.0\").unwrap());\n", "versionless release sent", "artcraft-launcher-native"),
     (N / "silent_update.rs", "if now.as_ref() != Some(version) {", "if false {", "installed believed without checking the records", "artcraft-launcher-native"),
     (N / "silent_update.rs", "if running == pid { Ok(()) }", "if true { Ok(()) }", "any process accepted as the service", "artcraft-launcher-native"),
     (C / "pipe.rs", "if let Err(why) = server_ok(server) {", "if let Err(why) = Ok::<(), String>(()) {", "pipe owner not checked", "artcraft-launcher-updater-service"),
     (S / "wire.rs", "Err(Refusal::Declined(why)) => Reply::Declined { reason: why.clone() },", "", "decline not told apart from a refusal", "artcraft-launcher-updater-service"),
+    (C / "wire.rs", "                if cancelled() {\n                    return Err(FrameError::Cancelled);\n                }\n", "", "cancel check removed from the wait", "artcraft-launcher-updater-client"),
+    (C / "answer.rs", "Err(WaitError::Cancelled) => Answer::WaitCancelled,", "Err(WaitError::Cancelled) => Answer::Unavailable(String::new()),", "cancelled wait reported as a missing service", "artcraft-launcher-updater-client"),
+    (C / "pipe.rs", "FrameError::Cancelled => WaitError::Cancelled,", "FrameError::Cancelled => other(\"x\"),", "cancel lost on the way out of the pipe", "artcraft-launcher-updater-service"),
+    (N / "silent_update.rs", "service.ask(app.id, &version.to_string(), cancelled)", "service.ask(app.id, &version.to_string(), &|| false)", "caller's cancel not passed to the wait", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "if answer == Answer::WaitCancelled {", "if false {", "cancelled wait treated as the normal route", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "Self::Cancelled => Some(Err(artcraft_launcher_core::protocol::CANCELLED.to_string())),", "Self::Cancelled => None,", "a cancel starts a second install", "artcraft-launcher-native"),
 ]
 
 results = []

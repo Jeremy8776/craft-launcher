@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use interprocess::os::windows::named_pipe::{DuplexPipeStream, pipe_mode};
 
-use crate::wire::{Reply, frame, read_frame};
+use crate::answer::WaitError;
+use crate::wire::{FrameError, Reply, frame, read_frame_cancellable};
 
 /// One end of the pipe.
 pub type Stream = DuplexPipeStream<pipe_mode::Bytes>;
@@ -51,16 +52,33 @@ pub fn request(pipe_path: &str, body: &[u8], timeout: Duration) -> Result<Reply,
 /// running. `server_ok` is given the process id of the program that owns the pipe, and nothing is
 /// sent unless it says `Ok`; its `Err` text says why not.
 pub fn request_verified(pipe_path: &str, body: &[u8], timeout: Duration, server_ok: &dyn Fn(u32) -> Result<(), String>) -> Result<Reply, String> {
-    let mut stream = Stream::connect_by_path(Path::new(pipe_path)).map_err(|e| format!("couldn't reach the updater service ({e})"))?;
-    let server = stream.server_process_id().map_err(|e| format!("couldn't tell what is on the other end of the updater pipe ({e})"))?;
+    request_cancellable(pipe_path, body, timeout, server_ok, &|| false).map_err(|e| e.to_string())
+}
+
+fn other(text: impl Into<String>) -> WaitError {
+    WaitError::Other(text.into())
+}
+
+/// [`request_verified`] that also stops waiting for the answer, with [`WaitError::Cancelled`], as
+/// soon as `cancelled` says so. Cancelling ends only this wait: a request the service already took
+/// is not withdrawn, so the install it started goes on.
+pub fn request_cancellable(
+    pipe_path: &str,
+    body: &[u8],
+    timeout: Duration,
+    server_ok: &dyn Fn(u32) -> Result<(), String>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Reply, WaitError> {
+    let mut stream = Stream::connect_by_path(Path::new(pipe_path)).map_err(|e| other(format!("couldn't reach the updater service ({e})")))?;
+    let server = stream.server_process_id().map_err(|e| other(format!("couldn't tell what is on the other end of the updater pipe ({e})")))?;
     if let Err(why) = server_ok(server) {
-        return Err(format!("the program on the updater pipe is not the updater service ({why})"));
+        return Err(other(format!("the program on the updater pipe is not the updater service ({why})")));
     }
-    stream.set_nonblocking(true).map_err(|e| format!("couldn't talk to the updater service ({e})"))?;
+    stream.set_nonblocking(true).map_err(|e| other(format!("couldn't talk to the updater service ({e})")))?;
     if body.len() > CLIENT_MAX_BODY {
-        return Err("the request was too large".into());
+        return Err(other("the request was too large"));
     }
-    let framed = frame(body).ok_or("the request was too large")?;
+    let framed = frame(body).ok_or_else(|| other("the request was too large"))?;
     let mut rest = framed.as_slice();
     let until = Instant::now() + Duration::from_secs(5);
     while !rest.is_empty() {
@@ -69,16 +87,18 @@ pub fn request_verified(pipe_path: &str, body: &[u8], timeout: Duration, server_
             // `Ok(0)` and `WouldBlock` both mean "no room yet" on a non-blocking pipe.
             Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(format!("couldn't talk to the updater service ({e})")),
+            Err(e) => return Err(other(format!("couldn't talk to the updater service ({e})"))),
         }
         if !rest.is_empty() {
             if Instant::now() >= until {
-                return Err("the updater service did not take the request".into());
+                return Err(other("the updater service did not take the request"));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    let answer = read_frame(&mut NoWait(&mut stream), REPLY_MAX_BYTES, Instant::now() + timeout)
-        .map_err(|e| format!("no answer from the updater service ({e:?})"))?;
-    serde_json::from_slice(&answer).map_err(|_| "the updater service sent an answer that could not be read".to_string())
+    let answer = read_frame_cancellable(&mut NoWait(&mut stream), REPLY_MAX_BYTES, Instant::now() + timeout, cancelled).map_err(|e| match e {
+        FrameError::Cancelled => WaitError::Cancelled,
+        failed => other(format!("no answer from the updater service ({failed:?})")),
+    })?;
+    serde_json::from_slice(&answer).map_err(|_| other("the updater service sent an answer that could not be read"))
 }

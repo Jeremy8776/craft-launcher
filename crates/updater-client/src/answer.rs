@@ -26,6 +26,24 @@ pub fn request_body(app_id: &str, version: &str) -> Vec<u8> {
     serde_json::to_vec(&Request { app: app_id, version }).unwrap_or_default()
 }
 
+/// Why waiting for the service ended without a reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitError {
+    /// The caller cancelled. The service was not told to stop, so it may still finish what it started.
+    Cancelled,
+    /// Anything else, in plain text for the log.
+    Other(String),
+}
+
+impl std::fmt::Display for WaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("stopped waiting for the updater service"),
+            Self::Other(text) => f.write_str(text),
+        }
+    }
+}
+
 /// What came of asking the service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -35,6 +53,9 @@ pub enum Answer {
     Busy,
     /// The install was cancelled or interrupted.
     Cancelled,
+    /// The person cancelled while the launcher waited. The service was not told to stop, so it
+    /// may still finish the update.
+    WaitCancelled,
     /// Windows Installer stopped with this error code.
     Failed(i32),
     /// The service leaves this app to the normal update route (for example it sits outside
@@ -58,11 +79,21 @@ impl Answer {
             Self::Installed => "installed by the updater service".into(),
             Self::Busy => "the updater service found another install running".into(),
             Self::Cancelled => "the updater service's install was cancelled".into(),
+            Self::WaitCancelled => "stopped waiting for the updater service because the update was cancelled; it may still finish".into(),
             Self::Failed(code) => format!("the updater service's install stopped with error {code}"),
             Self::Declined(why) => format!("the updater service left this to the normal update ({why})"),
             Self::Refused(why) => format!("the updater service refused ({why})"),
             Self::Unavailable(why) => format!("the updater service is not available ({why})"),
         }
+    }
+}
+
+/// [`interpret`] for a wait that can also end because the caller cancelled.
+pub fn interpret_wait(result: Result<Reply, WaitError>) -> Answer {
+    match result {
+        Err(WaitError::Cancelled) => Answer::WaitCancelled,
+        Err(WaitError::Other(why)) => Answer::Unavailable(why),
+        Ok(reply) => interpret(Ok(reply)),
     }
 }
 
@@ -84,7 +115,14 @@ pub fn interpret(result: Result<Reply, String>) -> Answer {
 /// is the real service (its `Err` text says why not); nothing is sent to anything else.
 #[cfg(windows)]
 pub fn ask(app_id: &str, version: &str, server_ok: &dyn Fn(u32) -> Result<(), String>) -> Answer {
-    interpret(crate::pipe::request_verified(crate::pipe::PIPE_PATH, &request_body(app_id, version), ANSWER_TIMEOUT, server_ok))
+    ask_cancellable(app_id, version, server_ok, &|| false)
+}
+
+/// [`ask`] that stops waiting, with [`Answer::WaitCancelled`], as soon as `cancelled` says so.
+/// Cancelling ends only the launcher's wait: an install the service already started goes on.
+#[cfg(windows)]
+pub fn ask_cancellable(app_id: &str, version: &str, server_ok: &dyn Fn(u32) -> Result<(), String>, cancelled: &dyn Fn() -> bool) -> Answer {
+    interpret_wait(crate::pipe::request_cancellable(crate::pipe::PIPE_PATH, &request_body(app_id, version), ANSWER_TIMEOUT, server_ok, cancelled))
 }
 
 #[cfg(test)]
@@ -108,6 +146,7 @@ mod tests {
         for not_done in [
             interpret(ran(Outcome::Busy)),
             interpret(ran(Outcome::Cancelled)),
+            interpret_wait(Err(WaitError::Cancelled)),
             interpret(ran(Outcome::Failed(1603))),
             interpret(Ok(Reply::Declined { reason: "outside Program Files".into() })),
             interpret(Ok(Reply::Refused { reason: "not newer".into() })),
@@ -126,11 +165,20 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_wait_is_told_apart_from_a_missing_service() {
+        assert_eq!(interpret_wait(Err(WaitError::Cancelled)), Answer::WaitCancelled);
+        assert_eq!(interpret_wait(Err(WaitError::Other("gone".into()))), Answer::Unavailable("gone".into()));
+        assert_eq!(interpret_wait(Ok(Reply::Declined { reason: "d".into() })), Answer::Declined("d".into()));
+        assert!(!Answer::WaitCancelled.is_installed());
+    }
+
+    #[test]
     fn every_answer_has_a_log_line() {
         for answer in [
             Answer::Installed,
             Answer::Busy,
             Answer::Cancelled,
+            Answer::WaitCancelled,
             Answer::Failed(1603),
             Answer::Declined("d".into()),
             Answer::Refused("r".into()),

@@ -133,6 +133,33 @@ fn a_half_frame_times_out_and_the_service_keeps_serving() {
 }
 
 #[test]
+fn a_cancel_ends_the_clients_wait_while_the_service_goes_on() {
+    use artcraft_launcher_updater_client::WaitError;
+    use artcraft_launcher_updater_client::pipe::request_cancellable;
+
+    let started = AtomicBool::new(false);
+    let finished = AtomicBool::new(false);
+    // A slow install: the service takes the request, then works for a while.
+    let handler = |_: &[u8]| {
+        started.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(1500));
+        finished.store(true, Ordering::SeqCst);
+        Ok(Outcome::Installed)
+    };
+    let (result, waited) = with_server(&config(2000), &handler, &AnyCaller, |path| {
+        let began = Instant::now();
+        // The person cancels once the install is under way. The deadline is a minute away.
+        let cancelled = || started.load(Ordering::SeqCst);
+        let result = request_cancellable(path, b"{}", Duration::from_secs(60), &|_| Ok(()), &cancelled);
+        (result, began.elapsed())
+    });
+    assert_eq!(result, Err(WaitError::Cancelled));
+    assert!(waited < Duration::from_millis(1200), "the client kept waiting for {waited:?}");
+    // Cancelling ended only the client's wait: the install the service started ran to its end.
+    assert!(finished.load(Ordering::SeqCst));
+}
+
+#[test]
 fn requests_are_handled_one_at_a_time() {
     let running = AtomicUsize::new(0);
     let overlap = AtomicBool::new(false);

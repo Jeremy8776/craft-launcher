@@ -24,7 +24,8 @@ pub mod pipe;
 pub mod wire;
 
 #[cfg(windows)]
-pub use answer::ask;
-pub use answer::{Answer, interpret, request_body};
+pub use answer::{Answer, WaitError, interpret, interpret_wait, request_body};
+#[cfg(windows)]
+pub use answer::{ask, ask_cancellable};
 pub use outcome::Outcome;
 pub use wire::Reply;

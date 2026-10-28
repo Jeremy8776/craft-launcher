@@ -114,8 +114,13 @@ pub fn install_at(
     if crate::silent_update::wanted(kind, msi_scope, existing.is_some() && !job.replace) && !cancelled(job.stop)() {
         (job.phase)(JobPhase::Installing);
         let installed_version = || crate::detect::windows::detect(app).and_then(|found| found.version);
-        if crate::silent_update::update(&crate::silent_update::Pipe, &installed_version, app, release) {
-            return Ok(None);
+        // A service that did not finish leaves the normal route to run, including one still working
+        // when the wait ran out: Windows refuses a second install while the first is running (error
+        // 1618) and `explain` says so in plain words, so nothing runs twice.
+        // If the person cancelled meanwhile, the service may still finish its install: do not start another.
+        let silent = crate::silent_update::update(&crate::silent_update::Pipe, &installed_version, app, release, &cancelled(job.stop));
+        if let Some(settled) = silent.settled() {
+            return settled.map(|()| None);
         }
     }
     let file = download(release, asset, job)?;

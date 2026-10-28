@@ -20,6 +20,8 @@ pub enum FrameError {
     Closed,
     /// The deadline passed.
     TimedOut,
+    /// The caller stopped waiting. Nothing is known about what the other end was doing.
+    Cancelled,
     /// The pipe failed.
     Io(io::ErrorKind),
 }
@@ -36,23 +38,33 @@ pub fn frame(payload: &[u8]) -> Option<Vec<u8>> {
 /// Reads one frame of at most `max` bytes. `input` may be non-blocking: a `WouldBlock` is
 /// retried until `deadline`.
 pub fn read_frame(input: &mut dyn Read, max: usize, deadline: Instant) -> Result<Vec<u8>, FrameError> {
+    read_frame_cancellable(input, max, deadline, &|| false)
+}
+
+/// [`read_frame`] that also stops, with [`FrameError::Cancelled`], as soon as `cancelled` says so.
+/// It is asked each time the pipe has nothing to read yet, so a stop is noticed within a few
+/// milliseconds instead of at the deadline.
+pub fn read_frame_cancellable(input: &mut dyn Read, max: usize, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>, FrameError> {
     let mut head = [0u8; 2];
-    fill(input, &mut head, deadline)?;
+    fill(input, &mut head, deadline, cancelled)?;
     let len = usize::from(u16::from_be_bytes(head));
     if len > max {
         return Err(FrameError::TooLarge);
     }
     let mut body = vec![0u8; len];
-    fill(input, &mut body, deadline)?;
+    fill(input, &mut body, deadline, cancelled)?;
     Ok(body)
 }
 
-fn fill(input: &mut dyn Read, mut buf: &mut [u8], deadline: Instant) -> Result<(), FrameError> {
+fn fill(input: &mut dyn Read, mut buf: &mut [u8], deadline: Instant, cancelled: &dyn Fn() -> bool) -> Result<(), FrameError> {
     while !buf.is_empty() {
         match input.read(buf) {
             Ok(0) => return Err(FrameError::Closed),
             Ok(n) => buf = buf.get_mut(n..).ok_or(FrameError::Io(io::ErrorKind::InvalidData))?,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => {
+                if cancelled() {
+                    return Err(FrameError::Cancelled);
+                }
                 if Instant::now() >= deadline {
                     return Err(FrameError::TimedOut);
                 }
@@ -126,6 +138,33 @@ mod tests {
         let started = Instant::now();
         assert_eq!(read_frame(&mut Silent, 16, Instant::now() + Duration::from_millis(60)), Err(FrameError::TimedOut));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_cancel_ends_the_wait_long_before_the_deadline() {
+        struct Quiet;
+        impl Read for Quiet {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+        }
+        let asked = std::cell::Cell::new(0);
+        let cancelled = || {
+            asked.set(asked.get() + 1);
+            asked.get() > 3
+        };
+        let started = Instant::now();
+        // The deadline is seconds away, long after the cancel: only the cancel ends this wait early.
+        let result = read_frame_cancellable(&mut Quiet, 16, Instant::now() + Duration::from_secs(5), &cancelled);
+        assert_eq!(result, Err(FrameError::Cancelled));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(asked.get() > 3, "the cancel check was not asked while waiting");
+    }
+
+    #[test]
+    fn a_cancel_that_never_comes_changes_nothing() {
+        let framed = frame(b"abc").unwrap();
+        assert_eq!(read_frame_cancellable(&mut framed.as_slice(), 16, soon(), &|| false).unwrap(), b"abc");
     }
 
     #[test]
