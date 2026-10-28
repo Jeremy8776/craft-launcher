@@ -25,6 +25,9 @@ verifysign = "1"
 # The launcher's own detection and download code, so the service and the launcher agree on what
 # "installed" means and there is one download path with one URL allowlist.
 artcraft-launcher-native = { workspace = true }
+# Reads Windows Installer's own record of who a product is installed for. Same version the
+# launcher's native crate already uses.
+winreg = "0.55"
 # The pipe the launcher talks to. Safe wrappers over named pipes: a security descriptor on the
 # pipe, local-only, and the client's process id. 0BSD OR Apache-2.0.
 interprocess = "2"

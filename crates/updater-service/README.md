@@ -57,15 +57,25 @@ Built and tested, **not yet run as a real service or against a real install on a
 | **Elevated run 2:** the real service ran as `NT AUTHORITY\SYSTEM`; staging inherited the Program Files ACL (Users read-only); a normal user could not write to the service folder, staging or the exe, nor stop the service; refusals came back in plain words; the real machine-wide records and a real HTTPS fetch worked as SYSTEM; the audit log matched; service removed cleanly | `e2e/` |
 | **Not run:** a real update of a real app, a second Windows account | needs a real newer signed release and another user |
 
-## Open finding: install folder of machine-registered apps
+## Finding fixed: the registry hive is not the install context
 
-On the development PC every app has a machine-wide Windows Installer record, but its files are in
-the user's profile (`%LOCALAPPDATA%\Programs\ArtCraft\<App>`), and the folder is recorded only
-under `HKCU\SOFTWARE\<App>\InstallDir`. The service runs as SYSTEM and cannot read that hive, and
-the engine's command line passes no `INSTALLFOLDER`. What the app MSIs do with an update run like
-that is **not proven**: it may relocate the app to the default Program Files folder. Until it is
-proven, the safe rule is to update only apps whose machine-registered folder is known and inside
-Program Files, and leave everything else to the launcher's existing (UAC) route.
+The first version trusted the Add/Remove Programs entry (HKLM or HKCU) to say whether an app was
+per-machine. On the development PC all 13 apps have an HKLM entry but are recorded by Windows
+Installer for one user (`Installer\UserData\S-1-5-21-...`), so the service wrongly treated them as
+per-machine. It now asks Windows Installer's own admin-only record: a product is per-machine only if
+it is listed under `Installer\UserData\S-1-5-18`. A real-registry test pins this (`machine.rs`).
+
+Consequence for custom folders: a per-user install in a custom folder never reaches the service. It
+updates with no UAC prompt through the launcher's per-user route, so nobody is blocked.
+
+## Still open: a true per-machine install in a custom folder
+
+The command line passes no `INSTALLFOLDER`. For a real per-machine install in the default Program
+Files folder that is correct (the package restores it). For a per-machine install in a custom
+folder it is **not proven** that the update stays there. The folder must come from a trusted source
+(Windows Installer's machine component records), never from the caller or a user registry hive: a
+folder chosen by a normal user would let SYSTEM write into a place the user controls. Until built,
+the service should decline these (the launcher then uses its normal UAC route), not fail them.
 
 ## Not built yet
 

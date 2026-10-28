@@ -366,6 +366,7 @@ dependencies = [
  "verifysign",
  "widestring",
  "windows-service",
+ "winreg",
 ]
 
 [[package]]
