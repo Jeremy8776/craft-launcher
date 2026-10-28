@@ -1,0 +1,14 @@
+{
+  "id": "artcraft-updater",
+  "name": "ArtCraft Updater",
+  "service": "ArtCraftUpdater",
+  "upgradeCode": "2EC794AB-99ED-42A4-BE38-98F0A2945B2A",
+  "sources": [
+    "artcraft-updater.wxs"
+  ],
+  "icon": "assets/app-icon/artcraft-launcher.ico",
+  "extensions": [],
+  "payloads": [
+    "artcraft-updater-service.exe"
+  ]
+}

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ArtCraft Updater MSI (WiX Toolset v5). Built by package-updater.ps1:
+
+    wix build artcraft-updater.wxs -arch x64
+      -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+
+  What it installs: one Windows service, "ArtCraft Updater", running as the system, in
+  Program Files\ArtCraft\Updater. It lets ArtCraft Launcher update Craft Apps that are installed for
+  all users without Windows asking for permission again for every update. The launcher's own
+  installer is per-user and is NOT changed by this package; this one is separate on purpose.
+
+  Per-machine, so installing it asks Windows for permission once. That prompt is the consent: the
+  launcher explains what is about to happen before it starts this installer, and never runs it
+  silently.
+
+  Why the folder is not a public property: the service refuses to run from anywhere but inside
+  Program Files (crates/updater-service/src/service.rs), because only administrators can write
+  there and the checks it makes are only worth anything if a normal user cannot change a download
+  between the check and the install. A directory Id with capital letters is a public property that
+  could be set on the msiexec command line, so these are mixed case and cannot be.
+
+  The service makes its own `staging` folder and `updater.log` beside itself. Uninstall stops the
+  service first, then removes what the service made.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="ArtCraft Updater"
+      Manufacturer="Learning Machines LLC"
+      Version="$(var.Version)"
+      UpgradeCode="2EC794AB-99ED-42A4-BE38-98F0A2945B2A"
+      Scope="perMachine"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="ArtCraft Updater: updates Craft Apps installed for all users without asking for permission each time" Manufacturer="Learning Machines LLC" />
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of ArtCraft Updater is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="ArtCraftUpdaterIcon.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="ArtCraftUpdaterIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://getartcraft.com/apps" />
+    <Property Id="ARPCOMMENTS" Value="Lets ArtCraft Launcher update Craft Apps installed for all users without asking for permission each time. Remove it and updates ask for permission again." />
+    <!-- Nothing to change or repair: remove it and install it again. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="CraftSuiteFolder" Name="ArtCraft">
+        <Directory Id="UpdaterFolder" Name="Updater">
+          <Directory Id="StagingFolder" Name="staging" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="ArtCraft Updater" Level="1">
+      <ComponentGroupRef Id="ArtCraftUpdaterFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ArtCraftUpdaterFiles">
+      <Component Id="ArtCraftUpdaterService" Directory="UpdaterFolder" Guid="*">
+        <File Id="ArtCraftUpdaterServiceExe" Source="$(var.BinDir)\artcraft-updater-service.exe" KeyPath="yes" />
+
+        <!-- Runs as the system, started at boot. `run` is the argument the program waits for: started
+             any other way it prints how it is meant to be started and stops. -->
+        <ServiceInstall Id="ArtCraftUpdaterServiceInstall" Name="ArtCraftUpdater" DisplayName="ArtCraft Updater"
+            Description="Updates Craft Apps that are installed for all users, for ArtCraft Launcher, without asking for permission each time. Only installs newer, signed releases."
+            Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="run" Vital="yes">
+        </ServiceInstall>
+        <!-- No restart-on-failure setting: WiX can only set one through the Util extension, whose
+             custom actions run code as the system during setup, and check-updater-policy.ps1 allows
+             no installer code. If the service ever stops, the launcher's normal route takes over
+             (it falls back on "no service"), and the service starts again at the next boot. -->
+        <!-- Start it now, and again after an upgrade. Stop it before its files are replaced or removed. -->
+        <ServiceControl Id="ArtCraftUpdaterServiceControl" Name="ArtCraftUpdater" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+
+        <!-- For the launcher to find out whether it is installed, and which version. -->
+        <RegistryValue Root="HKLM" Key="Software\Learning Machines LLC\ArtCraft Updater" Name="InstallDir" Value="[UpdaterFolder]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\Learning Machines LLC\ArtCraft Updater" Name="Version" Value="$(var.Version)" Type="string" />
+
+        <!-- What the running service made beside itself. -->
+        <RemoveFile Id="RemoveStagedPackages" Directory="StagingFolder" Name="*.*" On="uninstall" />
+        <RemoveFile Id="RemoveUpdaterLog" Directory="UpdaterFolder" Name="updater.log" On="uninstall" />
+        <RemoveFolder Id="RemoveStagingFolder" Directory="StagingFolder" On="uninstall" />
+        <RemoveFolder Id="RemoveUpdaterFolder" Directory="UpdaterFolder" On="uninstall" />
+        <!-- Only if nothing else (the apps' own folders) is in it. -->
+        <RemoveFolder Id="RemoveCraftSuiteFolder" Directory="CraftSuiteFolder" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
