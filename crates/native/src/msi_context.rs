@@ -1,8 +1,6 @@
 //! MSI update context is authoritative, not inferred from a display registry entry.
 //! An existing copy must never fall back to a fresh installation when discovery fails.
 
-use std::path::Path;
-
 use crate::install::MsiScope;
 
 const UNKNOWN_CONTEXT: &str = "Windows could not confirm who this app is installed for. No changes were made. Try the app's installer instead.";
@@ -55,11 +53,13 @@ pub(crate) fn single_scope(scopes: impl IntoIterator<Item = MsiScope>) -> Option
     scopes.all(|scope| scope == first).then_some(first)
 }
 
-/// The context for a fresh install. A package that defaults to per-user cannot write to a folder this
-/// account has no write access to (a custom folder under Program Files), so that install is machine-wide
-/// and Windows asks for permission. Any other fresh install takes the package's own default.
-pub(crate) fn fresh_scope(destination: Option<&Path>, writable: impl FnOnce(&Path) -> bool) -> Option<MsiScope> {
-    destination.filter(|folder| !writable(folder)).map(|_| MsiScope::PerMachine)
+/// The context to install in. An update keeps `updated`, the context of the copy it replaces. A fresh
+/// install (no copy at all) is machine-wide, so every app lands in `C:\Program Files\ArtCraft\<App>`
+/// (or the folder the person chose) and not in one account's profile; a dual-scope package would
+/// otherwise take its own default, which is per-user. Windows asks for permission once, for that
+/// install. Anything else (a copy that is not an MSI) takes the package's own default.
+pub(crate) fn install_scope(updated: Option<MsiScope>, fresh: bool) -> Option<MsiScope> {
+    updated.or_else(|| fresh.then_some(MsiScope::PerMachine))
 }
 
 pub(crate) fn valid_product_code(code: &str) -> bool {
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_installs_do_not_probe_or_override_the_package_default() {
+    fn a_fresh_install_is_not_looked_up() {
         assert_eq!(update_scope(false, None, |_| Err(ProbeError::Unknown), |_| None), Ok(None));
     }
 
@@ -235,10 +235,19 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_install_into_a_folder_the_account_cannot_write_is_machine_wide() {
-        let folder = Path::new(r"C:\Program Files\Custom\PhotoCraft");
-        assert_eq!(fresh_scope(Some(folder), |_| false), Some(MsiScope::PerMachine));
-        assert_eq!(fresh_scope(Some(folder), |_| true), None);
-        assert_eq!(fresh_scope(None, |_| panic!("no folder, nothing to test")), None);
+    fn a_fresh_install_is_machine_wide() {
+        assert_eq!(install_scope(None, true), Some(MsiScope::PerMachine));
+    }
+
+    #[test]
+    fn an_update_keeps_the_context_of_the_copy_it_replaces() {
+        for scope in [MsiScope::PerUser, MsiScope::PerMachine] {
+            assert_eq!(install_scope(Some(scope), false), Some(scope));
+        }
+    }
+
+    #[test]
+    fn a_copy_that_is_not_an_msi_takes_the_package_default() {
+        assert_eq!(install_scope(None, false), None);
     }
 }

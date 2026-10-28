@@ -102,8 +102,8 @@ pub fn install_at(
             crate::msi_context::probe,
             |code| crate::detect::windows::record_scope(app, code),
         )?;
-        // A fresh install keeps the package's own default unless the chosen folder needs administrator rights.
-        updated.or_else(|| if existing.is_none() { crate::msi_context::fresh_scope(destination.as_deref(), can_create_files_in) } else { None })
+        // A fresh install is machine-wide (Program Files); an update keeps the context of the copy it replaces.
+        crate::msi_context::install_scope(updated, existing.is_none())
     } else {
         None
     };
@@ -322,13 +322,6 @@ fn write_probe(dir: &Path) -> std::io::Result<()> {
     std::fs::remove_file(&probe)
 }
 
-/// Whether this account can create files where `path` goes: `path` itself, or the nearest folder above it
-/// that exists (an install folder is created by the installer).
-#[cfg(windows)]
-fn can_create_files_in(path: &Path) -> bool {
-    path.ancestors().find(|folder| folder.is_dir()).is_some_and(|folder| write_probe(folder).is_ok())
-}
-
 #[cfg(any(windows, test))]
 fn msi_folder_argument(path: &Path) -> Result<String, String> {
     let value = path.to_str().ok_or("unusual characters in a path")?;
@@ -340,8 +333,7 @@ fn msi_folder_argument(path: &Path) -> Result<String, String> {
 
 /// The Windows Installer context an update must keep. A per-machine install elevates and writes
 /// HKLM registrations; a per-user one must not silently become a second, per-machine copy (or
-/// the other way round). A fresh install passes `None` and takes the package's own default,
-/// which is per-user for a dual-scope package.
+/// the other way round). A fresh install is always `PerMachine`.
 #[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MsiScope {
