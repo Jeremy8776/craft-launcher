@@ -358,11 +358,23 @@ pub mod windows {
         exe_candidates(app, None, &candidates).into_iter().find(|p| p.exists())
     }
 
+    /// The app's exe directly in `folder`, under any name it has shipped as.
+    pub(super) fn exe_in_folder(app: &CraftApp, folder: &std::path::Path) -> Option<PathBuf> {
+        exe_candidates(app, Some(folder), &[]).into_iter().find(|p| p.exists())
+    }
+
     /// Last resort for opening an app whose uninstall record names no folder and whose exe is not in
-    /// the record's own scope: a per-machine record can describe files that the installer put in the
-    /// user's own `Programs` folder. This only decides which exe "Open" runs. The record's scope, which
-    /// decides how an update runs, is unchanged.
+    /// the record's own scope. The package records its folder (`InstallDir`) in the hive of the account
+    /// that installed it, which need not be the hive of its uninstall record: a per-user install can
+    /// leave a per-machine record. So the folder any hive or view recorded is tried first (this finds
+    /// a custom folder), then the usual folders of every scope. This only decides which exe "Open"
+    /// runs and where "Show in folder" goes. An update never takes its folder from here
+    /// (`location_is_in_record_scope`), and the record's scope is unchanged.
     fn exe_in_any_scope(app: &CraftApp) -> Option<PathBuf> {
+        let recorded = UNINSTALL_ROOTS.into_iter().find_map(|(hive, flags)| exe_in_folder(app, &install_dir(app, hive, flags)?));
+        if recorded.is_some() {
+            return recorded;
+        }
         let mut roots: Vec<PathBuf> = std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Programs")).into_iter().collect();
         for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(pf) = std::env::var_os(var).map(PathBuf::from)
@@ -891,6 +903,20 @@ mod tests {
         std::fs::write(folder.join("deckcraft.exe"), "x").unwrap();
         assert_eq!(windows::exe_in_roots(deck, vec![dir.path().to_path_buf()]), Some(folder.join("deckcraft.exe")));
         assert_eq!(windows::exe_in_roots(deck, vec![dir.path().join("elsewhere")]), None);
+    }
+
+    /// A folder the package recorded is searched as it is, whatever it is called, so an app installed
+    /// to a folder of the user's choosing is found.
+    #[cfg(windows)]
+    #[test]
+    fn an_exe_in_a_custom_recorded_folder_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let deck = CraftApp::by_id("deckcraft").unwrap();
+        let custom = dir.path().join("My Slides");
+        std::fs::create_dir_all(&custom).unwrap();
+        assert_eq!(windows::exe_in_folder(deck, &custom), None);
+        std::fs::write(custom.join("deckcraft.exe"), "x").unwrap();
+        assert_eq!(windows::exe_in_folder(deck, &custom), Some(custom.join("deckcraft.exe")));
     }
 
     #[test]
