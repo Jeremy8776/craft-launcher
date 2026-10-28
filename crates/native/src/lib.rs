@@ -26,6 +26,8 @@ pub mod proxy;
 pub mod queue;
 pub mod screenshots;
 pub mod self_update;
+#[cfg(any(windows, test))]
+mod silent_update;
 pub mod single_instance;
 pub mod source;
 

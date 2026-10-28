@@ -86,16 +86,29 @@ updates with no UAC prompt through the launcher's per-user route, so nobody is b
   folder a normal user may control (a junction swapped in after the check sends the files
   anywhere). Supporting them needs an ACL check that the folder is admin-only; not built.
 
+## The launcher's side
+
+`crates/updater-client` holds what the launcher and the service share: the framing, `Reply`,
+`Outcome`, `request_body` (an app id and a version, nothing else) and `ask`, which turns every way
+the service can answer or be missing into an `Answer`. It exists as its own crate because this crate
+depends on `artcraft-launcher-native`, so `native` cannot depend on this one.
+
+`native::silent_update` is the hook. In `install_at`, only for an MSI update of an app registered
+for all users, it asks the service before downloading anything. Only `Answer::Installed` ends the
+job; a decline, a refusal, an error or no service at all leaves the update to the normal route
+(download, then `msiexec` with Windows' own prompt). Mutation check for that side:
+`crates/updater-client/mutation-check.py`.
+
 ## Not built yet
 
 - **Per-machine launcher MSI** that installs the service into Program Files and registers it
   (WiX `ServiceInstall`, `LocalSystem`). The launcher MSI is per-user today.
-- **Launcher side:** call `pipe::request` for per-machine updates when the service is present, and
-  fall back to the existing `msiexec` route (with its UAC prompt) when it is not.
+- **Launcher side, offer to turn it on:** the launcher already asks the service (see below), but has
+  no screen yet that offers "silent updates for all-user installs" and installs the service.
 - **Publisher string.** The certificate says `Learning Machines Inc`; version resources and
   registry keys say `Learning Machines LLC`. Confirm which is intended.
 - **A second Windows account** to prove the pipe refuses other accounts and that a standard user's
-  launcher can use it.
+  launcher can use it. (Done in `e2e/`; kept here as a reminder of what that run covered.)
 
 ## Gate
 

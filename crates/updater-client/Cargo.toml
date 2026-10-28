@@ -1,0 +1,19 @@
+[package]
+name = "artcraft-launcher-updater-client"
+description = "ArtCraft Launcher's side of the updater service pipe: what goes over it, and a plain-answer client the launcher calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Named pipes with safe wrappers (no `unsafe` in our code). 0BSD OR Apache-2.0.
+interprocess = "2"

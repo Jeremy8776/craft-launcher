@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 artcraft-launcher-core = { workspace = true }
+# What goes over the pipe, shared with the launcher (the launcher cannot depend on this crate).
+artcraft-launcher-updater-client = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }

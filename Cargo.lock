@@ -311,6 +311,7 @@ name = "artcraft-launcher-native"
 version = "0.9.0"
 dependencies = [
  "artcraft-launcher-core",
+ "artcraft-launcher-updater-client",
  "craft-update",
  "dirs 6.0.0",
  "dunce",
@@ -351,11 +352,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "artcraft-launcher-updater-client"
+version = "0.9.0"
+dependencies = [
+ "interprocess",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "artcraft-launcher-updater-service"
 version = "0.9.0"
 dependencies = [
  "artcraft-launcher-core",
  "artcraft-launcher-native",
+ "artcraft-launcher-updater-client",
  "dunce",
  "interprocess",
  "semver",

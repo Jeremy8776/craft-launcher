@@ -107,6 +107,16 @@ pub fn install_at(
     } else {
         None
     };
+    // An all-users update can be done by the updater service with no prompt, if the person turned
+    // that on. It downloads and checks the installer itself, so this comes before our download.
+    // Whatever it answers other than "done", the normal route below carries on.
+    #[cfg(windows)]
+    if crate::silent_update::wanted(kind, msi_scope, existing.is_some() && !job.replace) && !cancelled(job.stop)() {
+        (job.phase)(JobPhase::Installing);
+        if crate::silent_update::update(&crate::silent_update::Pipe, app, release) {
+            return Ok(None);
+        }
+    }
     let file = download(release, asset, job)?;
     log::info!("{}: download ready ({}), running installer...", app.name, file.display());
     // Past this point the install can't be interrupted halfway.

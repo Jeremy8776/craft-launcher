@@ -18,6 +18,8 @@ local-mirror = []
 
 [dependencies]
 artcraft-launcher-core = { workspace = true }
+# Asks the optional updater service to do an all-users update without a prompt each time.
+artcraft-launcher-updater-client = { workspace = true }
 craft-update = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -11,6 +11,12 @@ import sys
 
 ROOT = pathlib.Path(sys.argv[1])
 SRC = ROOT / "crates" / "updater-service" / "src"
+CLIENT = ROOT / "crates" / "updater-client" / "src"
+
+
+def where(name):
+    """`client:wire.rs` is in the client crate, anything else in the service."""
+    return CLIENT / name[7:] if name.startswith("client:") else SRC / name
 
 # (file, old text, new text, what it breaks)
 MUTANTS = [
@@ -38,7 +44,7 @@ MUTANTS = [
     ("engine.rs", "self.machine.installed(request.app).ok_or(Refusal::NotInstalled)?",
      "self.machine.installed(request.app).unwrap_or(crate::machine::Installed { version: semver::Version::new(0, 0, 0), folder: None })", "installed-per-machine check skipped"),
     ("engine.rs", "if !version::is_update(&request.version, &installed.version) {", "if false {", "newer-only check removed"),
-    ("wire.rs", "if len > max {", "if false {", "frame length limit removed"),
+    ("client:wire.rs", "if len > max {", "if false {", "frame length limit removed"),
     ("pipe.rs", "!stream.client_process_id().is_ok_and(|pid| callers.allow(pid))", "false", "caller check bypassed"),
     ("pipe.rs", ".accept_remote(false)", ".accept_remote(true)", "pipe open to remote machines"),
     ("pipe.rs", '"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"', '"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GRGW;;;WD)"', "pipe open to everyone"),
@@ -50,14 +56,14 @@ MUTANTS = [
     ("engine.rs", "msi_command(self.msiexec, &staged, Some(folder))?", "msi_command(self.msiexec, &staged, None)?", "install folder not passed"),
     ("stage.rs", "dir != root && dir.starts_with(&root) && dir.is_dir()", "true", "folder containment check removed"),
     ("install.rs", "let text = text.trim_end_matches('\\\\');", "let text = &*text;", "trailing backslash not trimmed"),
-    ("wire.rs", "Err(Refusal::Declined(why)) => Self::Declined { reason: why.clone() },", "", "decline not told apart from a refusal"),
+    ("wire.rs", "Err(Refusal::Declined(why)) => Reply::Declined { reason: why.clone() },", "", "decline not told apart from a refusal"),
     ("service.rs", "meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0 || !meta.is_dir()", "false", "staging link check removed"),
 ]
 
 
 def run_tests():
     p = subprocess.run(
-        ["cargo", "test", "-p", "artcraft-launcher-updater-service", "-j", "8"],
+        ["cargo", "test", "-p", "artcraft-launcher-updater-service", "-p", "artcraft-launcher-updater-client", "-j", "8"],
         cwd=ROOT, capture_output=True, text=True,
     )
     return p.returncode, p.stdout + p.stderr
@@ -67,7 +73,7 @@ results = []
 backups = {}
 try:
     for f, old, new, label in MUTANTS:
-        path = SRC / f
+        path = where(f)
         text = path.read_text(encoding="utf-8")
         if text.count(old) != 1:
             results.append((label, "PATTERN NOT FOUND/UNIQUE"))
@@ -85,7 +91,7 @@ try:
             results.append((label, "killed by " + ", ".join(failed)[:110]))
 finally:
     for f, text in backups.items():
-        (SRC / f).write_text(text, encoding="utf-8")
+        where(f).write_text(text, encoding="utf-8")
 
 for label, status in results:
     print(f"{status:<14.14} | {label}" if status in ("SURVIVED", "DID NOT COMPILE") or status.startswith("PATTERN") else f"killed         | {label}  <- {status[10:]}")

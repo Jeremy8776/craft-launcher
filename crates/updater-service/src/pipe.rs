@@ -22,42 +22,23 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use interprocess::os::windows::named_pipe::{DuplexPipeStream, PipeListenerOptions, PipeMode, pipe_mode};
+use interprocess::os::windows::named_pipe::{PipeListenerOptions, PipeMode, pipe_mode};
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
 use widestring::U16CString;
 
 use crate::error::{Outcome, Refusal};
 use crate::publisher::PUBLISHER_ORGANISATIONS;
 use crate::request::MAX_REQUEST_BYTES;
-use crate::wire::{FrameError, Reply, frame, read_frame, reply_frame};
-
-type Stream = DuplexPipeStream<pipe_mode::Bytes>;
-
-/// Reads a non-blocking pipe. Windows answers a non-blocking read with no data yet as `Ok(0)`,
-/// which would look like a closed connection. A real disconnect arrives as a `BrokenPipe` error,
-/// so `Ok(0)` is turned into `WouldBlock` here and the callers' deadlines end the wait.
-struct NoWait<'a>(&'a mut Stream);
-
-impl Read for NoWait<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.0.read(buf) {
-            Ok(0) if !buf.is_empty() => Err(io::ErrorKind::WouldBlock.into()),
-            other => other,
-        }
-    }
-}
-
-/// The pipe's name.
-pub const PIPE_PATH: &str = r"\\.\pipe\artcraft-updater";
+use crate::wire::{FrameError, Reply, read_frame, reply_for, reply_frame};
+use artcraft_launcher_updater_client::pipe::{NoWait, PIPE_PATH, Stream};
 
 /// SYSTEM and Administrators: full control. Interactive users: read and write. Protected, so
 /// nothing is inherited. Nobody else is listed, so everyone else is refused.
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
 
-/// Pipe buffer size, and the largest request the client will try to send. The service refuses
-/// anything over [`MAX_REQUEST_BYTES`] itself; this only has to be bigger.
+/// Pipe buffer size. Room for a whole request (the service refuses anything over
+/// [`MAX_REQUEST_BYTES`]) and a reply.
 const BUFFER_BYTES: u32 = 8192;
-const CLIENT_MAX_BODY: usize = 4096;
 
 /// Connections being read at once. More than this are dropped at once.
 pub const MAX_READERS: usize = 16;
@@ -145,7 +126,7 @@ pub fn serve(config: &Config, handler: &dyn Fn(&[u8]) -> Result<Outcome, Refusal
         });
         while !stop.load(Ordering::SeqCst) {
             if let Ok((mut stream, body)) = rx.recv_timeout(Duration::from_millis(100)) {
-                let reply = Reply::from(&handler(&body));
+                let reply = reply_for(&handler(&body));
                 // Delivered on its own thread, so a client that never reads can't hold up the next install.
                 scope.spawn(move || send(&mut stream, &reply));
             }
@@ -167,7 +148,7 @@ fn read_one(mut stream: Stream, deadline: Duration, callers: &dyn Callers, queue
         Ok(body) => {
             let _ = queue.send((stream, body));
         }
-        Err(FrameError::TooLarge) => send(&mut stream, &Reply::from(&Err(Refusal::TooLarge))),
+        Err(FrameError::TooLarge) => send(&mut stream, &reply_for(&Err(Refusal::TooLarge))),
         Err(FrameError::TimedOut) => send(&mut stream, &Reply::Refused { reason: "the request took too long to arrive".into() }),
         Err(_) => {}
     }
@@ -198,37 +179,6 @@ fn send(stream: &mut Stream, reply: &Reply) {
             Err(_) => break,
         }
     }
-}
-
-/// Sends `body` to the service and waits up to `timeout` for the answer. This is what the
-/// launcher calls.
-pub fn request(pipe_path: &str, body: &[u8], timeout: Duration) -> Result<Reply, String> {
-    let mut stream = Stream::connect_by_path(Path::new(pipe_path)).map_err(|e| format!("couldn't reach the updater service ({e})"))?;
-    stream.set_nonblocking(true).map_err(|e| format!("couldn't talk to the updater service ({e})"))?;
-    if body.len() > CLIENT_MAX_BODY {
-        return Err("the request was too large".into());
-    }
-    let framed = frame(body).ok_or("the request was too large")?;
-    let mut rest = framed.as_slice();
-    let until = Instant::now() + Duration::from_secs(5);
-    while !rest.is_empty() {
-        match stream.write(rest) {
-            Ok(n) if n > 0 => rest = rest.get(n..).unwrap_or_default(),
-            // `Ok(0)` and `WouldBlock` both mean "no room yet" on a non-blocking pipe.
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => return Err(format!("couldn't talk to the updater service ({e})")),
-        }
-        if !rest.is_empty() {
-            if Instant::now() >= until {
-                return Err("the updater service did not take the request".into());
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-    let answer =
-        read_frame(&mut NoWait(&mut stream), 4096, Instant::now() + timeout).map_err(|e| format!("no answer from the updater service ({e:?})"))?;
-    serde_json::from_slice(&answer).map_err(|_| "the updater service sent an answer that could not be read".to_string())
 }
 
 #[cfg(test)]

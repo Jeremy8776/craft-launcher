@@ -3,6 +3,8 @@
 
 use std::sync::atomic::AtomicU32;
 
+use artcraft_launcher_updater_client::pipe::request;
+
 use super::*;
 
 static NEXT: AtomicU32 = AtomicU32::new(0);

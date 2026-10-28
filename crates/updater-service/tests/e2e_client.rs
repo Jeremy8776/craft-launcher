@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use artcraft_launcher_updater_service::pipe::{PIPE_PATH, request};
+use artcraft_launcher_updater_client::pipe::{PIPE_PATH, request};
 
 #[test]
 #[ignore = "talks to a running updater service"]
