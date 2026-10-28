@@ -26,3 +26,15 @@ fn asks_the_running_service() {
         println!("REPLY {}", serde_json::json!({ "label": label, "reply": reply }));
     }
 }
+
+/// Asks the running service for one update, named by `E2E_APP` and `E2E_VERSION`, and prints the
+/// reply. Used for the real-app run (`e2e/real_update.ps1`).
+#[test]
+#[ignore = "talks to a running updater service"]
+fn asks_for_one_update() {
+    let app = std::env::var("E2E_APP").unwrap_or_default();
+    let version = std::env::var("E2E_VERSION").unwrap_or_default();
+    let body = serde_json::json!({ "app": app, "version": version }).to_string();
+    let reply = request(PIPE_PATH, body.as_bytes(), Duration::from_secs(900)).unwrap_or_else(|e| panic!("update: {e}"));
+    println!("REPLY {}", serde_json::json!({ "label": "update", "reply": reply }));
+}
