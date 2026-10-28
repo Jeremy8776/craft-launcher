@@ -348,16 +348,25 @@ pub mod windows {
         exe_in_roots(app, roots)
     }
 
-    /// The exe under the given install roots: the `ArtCraft` suite folder first, then the bare root
-    /// (older installs).
+    /// Where the exe may be under the given install roots, best first: the launcher's own folder, then
+    /// the `ArtCraft` suite folder of each root, then the bare roots (older installs). Not checked on
+    /// disk.
+    fn candidates_in_roots(app: &CraftApp, roots: &[PathBuf]) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = suite_folders(app, roots).iter().flat_map(|dir| exe_candidates(app, Some(dir), &[])).collect();
+        let mut dirs: Vec<PathBuf> = roots.iter().map(|root| root.join("ArtCraft")).collect();
+        dirs.extend(roots.iter().cloned());
+        out.extend(exe_candidates(app, None, &dirs));
+        out
+    }
+
+    /// The first exe under the given install roots.
     pub(super) fn exe_in_roots(app: &CraftApp, roots: Vec<PathBuf>) -> Option<PathBuf> {
-        let launcher_folders = suite_folders(app, &roots);
-        if let Some(found) = launcher_folders.iter().find_map(|dir| exe_candidates(app, Some(dir), &[]).into_iter().find(|p| p.exists())) {
-            return Some(found);
-        }
-        let mut candidates: Vec<PathBuf> = roots.iter().map(|root| root.join("ArtCraft")).collect();
-        candidates.extend(roots);
-        exe_candidates(app, None, &candidates).into_iter().find(|p| p.exists())
+        candidates_in_roots(app, &roots).into_iter().find(|p| p.exists())
+    }
+
+    /// Every exe under the given install roots, in the order `exe_in_roots` prefers them.
+    pub(super) fn exe_all_in_roots(app: &CraftApp, roots: Vec<PathBuf>) -> Vec<PathBuf> {
+        candidates_in_roots(app, &roots).into_iter().filter(|p| p.exists()).collect()
     }
 
     /// The app's exe directly in `folder`, under any name it has shipped as.
@@ -385,7 +394,7 @@ pub mod windows {
                 roots.push(pf);
             }
         }
-        found.extend(exe_in_roots(app, roots));
+        found.extend(exe_all_in_roots(app, roots));
         pick_candidate(found, version, executable_version)
     }
 
@@ -944,6 +953,24 @@ mod tests {
         assert_eq!(windows::pick_candidate(both.clone(), v("0.99.0").as_ref(), version_of), Some(old.clone()));
         assert_eq!(windows::pick_candidate(both, None, version_of), Some(old.clone()));
         assert_eq!(windows::pick_candidate(Vec::new(), v("0.12.0").as_ref(), version_of), None);
+    }
+
+    /// Every exe under the given roots, in the order `exe_in_roots` prefers them, so a version match
+    /// can see a copy that an earlier root's older copy would otherwise hide.
+    #[cfg(windows)]
+    #[test]
+    fn every_root_is_searched_for_a_version_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let deck = CraftApp::by_id("deckcraft").unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        let exes: Vec<PathBuf> = [&a, &b].iter().map(|r| r.join("ArtCraft").join("DeckCraft").join("deckcraft.exe")).collect();
+        for exe in &exes {
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(exe, "x").unwrap();
+        }
+        assert_eq!(windows::exe_all_in_roots(deck, vec![a.clone(), b.clone()]), exes);
+        assert_eq!(windows::exe_in_roots(deck, vec![a, b]), exes.first().cloned());
+        assert!(windows::exe_all_in_roots(deck, vec![dir.path().join("none")]).is_empty());
     }
 
     #[test]
