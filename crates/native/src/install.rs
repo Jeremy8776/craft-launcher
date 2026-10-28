@@ -113,7 +113,8 @@ pub fn install_at(
     #[cfg(windows)]
     if crate::silent_update::wanted(kind, msi_scope, existing.is_some() && !job.replace) && !cancelled(job.stop)() {
         (job.phase)(JobPhase::Installing);
-        if crate::silent_update::update(&crate::silent_update::Pipe, app, release) {
+        let installed_version = || crate::detect::windows::detect(app).and_then(|found| found.version);
+        if crate::silent_update::update(&crate::silent_update::Pipe, &installed_version, app, release) {
             return Ok(None);
         }
     }

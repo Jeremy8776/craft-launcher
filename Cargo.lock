@@ -326,6 +326,7 @@ dependencies = [
  "tempfile",
  "ureq",
  "verifysign",
+ "windows-service",
  "winreg",
  "winsafe",
  "zip 8.6.0",

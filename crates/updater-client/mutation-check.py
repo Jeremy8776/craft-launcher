@@ -26,10 +26,13 @@ M = [
      "is_update && kind == PackageKind::Msi", "per-user copy sent to the service", "artcraft-launcher-native"),
     (N / "silent_update.rs", "is_update && kind == PackageKind::Msi && scope == Some(MsiScope::PerMachine)",
      "is_update && scope == Some(MsiScope::PerMachine)", "non-MSI package sent to the service", "artcraft-launcher-native"),
-    (N / "silent_update.rs", "    answer.is_installed()\n}", "    true\n}", "any answer counts as done", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "if !answer.is_installed() {", "if false {", "any answer counts as done", "artcraft-launcher-native"),
     (N / "silent_update.rs", "service.ask(app.id, &version.to_string())", "service.ask(app.id, &release.tag)", "tag sent instead of version", "artcraft-launcher-native"),
     (N / "silent_update.rs", "    let Some(version) = release.version.as_ref() else {\n        return false;\n    };\n",
-     "    let version = release.version.clone().unwrap_or_else(|| artcraft_launcher_core::version::parse(\"0.0.0\").unwrap());\n", "versionless release sent", "artcraft-launcher-native"),
+     "    let version = &release.version.clone().unwrap_or_else(|| artcraft_launcher_core::version::parse(\"0.0.0\").unwrap());\n", "versionless release sent", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "if now.as_ref() != Some(version) {", "if false {", "installed believed without checking the records", "artcraft-launcher-native"),
+    (N / "silent_update.rs", "if running == pid { Ok(()) }", "if true { Ok(()) }", "any process accepted as the service", "artcraft-launcher-native"),
+    (C / "pipe.rs", "if let Err(why) = server_ok(server) {", "if let Err(why) = Ok::<(), String>(()) {", "pipe owner not checked", "artcraft-launcher-updater-service"),
     (S / "wire.rs", "Err(Refusal::Declined(why)) => Reply::Declined { reason: why.clone() },", "", "decline not told apart from a refusal", "artcraft-launcher-updater-service"),
 ]
 

@@ -10,8 +10,15 @@
 //! Only an update of an app that is already installed for all users is ever sent. The service
 //! decides everything else itself: it fetches the release, checks its checksum and signature,
 //! and refuses anything that is not a newer official release of an app it can see.
+//!
+//! The pipe's name is fixed, so any local program could create a pipe with that name when the
+//! service is not running and answer "installed". Two checks stop that from skipping an update:
+//! the launcher only talks to the process Windows reports as the running updater service
+//! ([`is_the_service`]), and it believes "installed" only after Windows Installer's own records
+//! show the release's version ([`update`]).
 
 use artcraft_launcher_core::release::Release;
+use artcraft_launcher_core::version::Version;
 use artcraft_launcher_core::{CraftApp, PackageKind};
 use artcraft_launcher_updater_client::Answer;
 
@@ -29,7 +36,7 @@ pub(crate) struct Pipe;
 #[cfg(windows)]
 impl Service for Pipe {
     fn ask(&self, app_id: &str, version: &str) -> Answer {
-        artcraft_launcher_updater_client::ask(app_id, version)
+        artcraft_launcher_updater_client::ask(app_id, version, &is_the_service)
     }
 }
 
@@ -40,16 +47,62 @@ pub(crate) fn wanted(kind: PackageKind, scope: Option<MsiScope>, is_update: bool
     is_update && kind == PackageKind::Msi && scope == Some(MsiScope::PerMachine)
 }
 
-/// Asks the service to update `app` to `release`. `true` only when the service finished the
-/// update. Anything else is logged and returns `false`.
-pub(crate) fn update(service: &dyn Service, app: &CraftApp, release: &Release) -> bool {
+/// Asks the service to update `app` to `release`. `true` only when the service said it finished
+/// AND `installed_version` (Windows Installer's records, read again by the caller) now shows the
+/// release's version. Anything else is logged and returns `false`.
+pub(crate) fn update(service: &dyn Service, installed_version: &dyn Fn() -> Option<Version>, app: &CraftApp, release: &Release) -> bool {
     // The service is asked by version number. A release known only by its tag cannot be named.
     let Some(version) = release.version.as_ref() else {
         return false;
     };
     let answer = service.ask(app.id, &version.to_string());
     log::info!("{}: {}", app.name, answer.describe());
-    answer.is_installed()
+    if !answer.is_installed() {
+        return false;
+    }
+    // An answer is only words. Trust the machine's records instead: if they do not show the new
+    // version, the normal route still has to run.
+    let now = installed_version();
+    if now.as_ref() != Some(version) {
+        log::warn!("{}: the updater service said installed, but Windows shows {:?}; updating the normal way", app.name, now);
+        return false;
+    }
+    true
+}
+
+/// The name the updater's installer gives the service. The launcher talks to nothing else.
+#[cfg(windows)]
+const SERVICE_NAME: &str = "ArtCraftUpdater";
+
+/// `Ok` only if process `pid` is the running updater service, as Windows' service manager reports
+/// it. A program that merely created a pipe with the same name has a different process id. (A
+/// normal user cannot open the service's process to look at its program file, but may ask the
+/// service manager which process is the service.) The `Err` text says why not, for the log.
+#[cfg(windows)]
+pub fn is_the_service(pid: u32) -> Result<(), String> {
+    same_process(service_process_id()?, pid)
+}
+
+/// `Ok` when the pipe's owner `pid` is the service's own process `running`.
+#[cfg(any(windows, test))]
+fn same_process(running: u32, pid: u32) -> Result<(), String> {
+    if running == pid { Ok(()) } else { Err(format!("process {pid} is not the updater service (that is process {running})")) }
+}
+
+/// The process id of the running updater service.
+#[cfg(windows)]
+fn service_process_id() -> Result<u32, String> {
+    use windows_service::service::{ServiceAccess, ServiceState};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| format!("couldn't ask Windows about services ({e})"))?;
+    let service =
+        manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS).map_err(|e| format!("the updater service is not installed ({e})"))?;
+    let status = service.query_status().map_err(|e| format!("couldn't read the updater service's state ({e})"))?;
+    match (status.current_state, status.process_id) {
+        (ServiceState::Running, Some(pid)) => Ok(pid),
+        (state, _) => Err(format!("the updater service is not running ({state:?})")),
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +140,11 @@ mod tests {
         Release { version: version::parse(v), tag: format!("v{v}"), ..Release::default() }
     }
 
+    /// Windows Installer's records after the update: the new version.
+    fn shows(v: &'static str) -> impl Fn() -> Option<Version> {
+        move || version::parse(v)
+    }
+
     #[test]
     fn only_an_update_of_an_all_users_msi_goes_to_the_service() {
         assert!(wanted(PackageKind::Msi, Some(MsiScope::PerMachine), true));
@@ -100,7 +158,7 @@ mod tests {
     #[test]
     fn a_finished_update_is_reported_as_done_and_names_only_the_app_and_version() {
         let service = Scripted::says(Answer::Installed);
-        assert!(update(&service, cadcraft(), &release("1.2.3")));
+        assert!(update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3")));
         assert_eq!(*service.asked.borrow(), vec![("cadcraft".to_string(), "1.2.3".to_string())]);
     }
 
@@ -115,7 +173,8 @@ mod tests {
             Answer::Unavailable("couldn't reach the updater service".into()),
         ] {
             let service = Scripted::says(answer.clone());
-            assert!(!update(&service, cadcraft(), &release("1.2.3")), "{answer:?}");
+            // Even if the records happened to show the new version, only "installed" counts.
+            assert!(!update(&service, &shows("1.2.3"), cadcraft(), &release("1.2.3")), "{answer:?}");
             assert_eq!(service.asked.borrow().len(), 1, "{answer:?}");
         }
     }
@@ -124,7 +183,33 @@ mod tests {
     fn a_release_without_a_version_number_is_not_sent() {
         let service = Scripted::says(Answer::Installed);
         let tag_only = Release { tag: "nightly".into(), ..Release::default() };
-        assert!(!update(&service, cadcraft(), &tag_only));
+        assert!(!update(&service, &shows("1.2.3"), cadcraft(), &tag_only));
         assert!(service.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn installed_is_not_believed_unless_windows_shows_the_new_version() {
+        // A program pretending to be the service says "installed" but nothing changed.
+        let liar = Scripted::says(Answer::Installed);
+        assert!(!update(&liar, &shows("1.2.2"), cadcraft(), &release("1.2.3")), "old version still installed");
+        assert!(!update(&liar, &|| None, cadcraft(), &release("1.2.3")), "app no longer found");
+        assert!(!update(&liar, &shows("1.2.4"), cadcraft(), &release("1.2.3")), "some other version");
+    }
+
+    #[test]
+    fn only_the_services_own_process_may_own_the_pipe() {
+        assert_eq!(same_process(4321, 4321), Ok(()));
+        assert!(same_process(4321, 4322).is_err());
+        assert!(same_process(4321, 0).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_test_program_is_not_the_updater_service() {
+        // Whether or not a service is installed on this PC, this test program is not it.
+        let this = is_the_service(std::process::id());
+        assert!(this.is_err(), "{this:?}");
+        let other = is_the_service(0xFFFF_FFF0);
+        assert!(other.is_err(), "{other:?}");
     }
 }

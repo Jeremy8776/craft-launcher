@@ -38,10 +38,24 @@ impl Read for NoWait<'_> {
     }
 }
 
+/// [`request_verified`] without a check of who is on the other end. For tests, which run their own
+/// server in this process. The launcher must use [`request_verified`] (through `ask`).
+pub fn request(pipe_path: &str, body: &[u8], timeout: Duration) -> Result<Reply, String> {
+    request_verified(pipe_path, body, timeout, &|_| Ok(()))
+}
+
 /// Sends `body` to the service and waits up to `timeout` for the answer. Fails at once when the
 /// service is not running.
-pub fn request(pipe_path: &str, body: &[u8], timeout: Duration) -> Result<Reply, String> {
+///
+/// The pipe's name is fixed, so any local program can create a pipe with it when the service is not
+/// running. `server_ok` is given the process id of the program that owns the pipe, and nothing is
+/// sent unless it says `Ok`; its `Err` text says why not.
+pub fn request_verified(pipe_path: &str, body: &[u8], timeout: Duration, server_ok: &dyn Fn(u32) -> Result<(), String>) -> Result<Reply, String> {
     let mut stream = Stream::connect_by_path(Path::new(pipe_path)).map_err(|e| format!("couldn't reach the updater service ({e})"))?;
+    let server = stream.server_process_id().map_err(|e| format!("couldn't tell what is on the other end of the updater pipe ({e})"))?;
+    if let Err(why) = server_ok(server) {
+        return Err(format!("the program on the updater pipe is not the updater service ({why})"));
+    }
     stream.set_nonblocking(true).map_err(|e| format!("couldn't talk to the updater service ({e})"))?;
     if body.len() > CLIENT_MAX_BODY {
         return Err("the request was too large".into());

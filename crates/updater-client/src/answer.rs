@@ -80,9 +80,11 @@ pub fn interpret(result: Result<Reply, String>) -> Answer {
 }
 
 /// Asks the updater service to update `app_id` to `version`, and waits for it to finish.
+/// `server_ok` is given the process id of the program that owns the pipe and must say `Ok` only if it
+/// is the real service (its `Err` text says why not); nothing is sent to anything else.
 #[cfg(windows)]
-pub fn ask(app_id: &str, version: &str) -> Answer {
-    interpret(crate::pipe::request(crate::pipe::PIPE_PATH, &request_body(app_id, version), ANSWER_TIMEOUT))
+pub fn ask(app_id: &str, version: &str, server_ok: &dyn Fn(u32) -> Result<(), String>) -> Answer {
+    interpret(crate::pipe::request_verified(crate::pipe::PIPE_PATH, &request_body(app_id, version), ANSWER_TIMEOUT, server_ok))
 }
 
 #[cfg(test)]

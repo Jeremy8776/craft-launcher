@@ -5,6 +5,7 @@ Windows Installer records) refuses what it should, in plain words; the service f
 staging folder cannot be written by a normal user; and the audit log recorded the requests.
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -39,20 +40,31 @@ check("oversize refused", "too large" in text("oversize"), text("oversize"))
 check("service still answers after the bad ones", "not installed for all users" in text("after"), text("after"))
 
 # 3. A normal user can't write where the checks depend on it.
+def access_denied(error):
+    return isinstance(error, PermissionError) and getattr(error, "winerror", None) == 5
+
+
 for label, target in (("service folder", DIR), ("staging folder", DIR / "staging")):
+    if not target.is_dir():
+        check(f"normal user can NOT write to the {label}", False, "folder missing")
+        continue
     try:
         (target / "planted.msi").write_bytes(b"x")
         (target / "planted.msi").unlink()
         check(f"normal user can NOT write to the {label}", False, "write succeeded")
-    except PermissionError:
-        check(f"normal user can NOT write to the {label}", True)
     except OSError as e:
-        check(f"normal user can NOT write to the {label}", True, f"{type(e).__name__}")
+        # Only "access denied" is the permissions saying no; any other error is a setup mistake.
+        check(f"normal user can NOT write to the {label}", access_denied(e), type(e).__name__)
+# A running program cannot be written to whatever its permissions say, so test a rename: Windows
+# allows renaming a running program unless the permissions forbid it.
+exe = DIR / "artcraft-updater-service.exe"
+moved = DIR / "artcraft-updater-service.exe.renamed"
 try:
-    (DIR / "artcraft-updater-service.exe").write_bytes(b"x")
-    check("normal user can NOT overwrite the service exe", False, "write succeeded")
-except OSError:
-    check("normal user can NOT overwrite the service exe", True)
+    os.replace(exe, moved)
+    os.replace(moved, exe)
+    check("normal user can NOT rename the service exe", False, "rename succeeded")
+except OSError as e:
+    check("normal user can NOT rename the service exe", access_denied(e), type(e).__name__)
 
 # 4. A normal user can't stop the service.
 stop = subprocess.run([r"C:\Windows\System32\sc.exe", "stop", "ArtCraftUpdaterE2E"], capture_output=True, text=True)

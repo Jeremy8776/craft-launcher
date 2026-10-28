@@ -37,7 +37,15 @@ fn an_all_users_app_is_updated_by_the_service_through_the_launchers_install_path
     assert_eq!(existing.version, version::parse(&from), "unexpected starting version");
 
     // The service is up and reachable by a normal user: a request it must refuse (not newer).
-    let probe = artcraft_launcher_updater_client::ask("cadcraft", &from);
+    // A launcher that does not trust the program on the pipe sends nothing and is told so.
+    let distrusted = artcraft_launcher_updater_client::ask("cadcraft", &from, &|_| Err("test says no".into()));
+    assert!(matches!(distrusted, Answer::Unavailable(ref why) if why.contains("not the updater service")), "{distrusted:?}");
+    // The launcher's real check of who is on the pipe accepts the real service.
+    let probe = artcraft_launcher_updater_client::ask("cadcraft", &from, &|pid| {
+        let verdict = artcraft_launcher_native::silent_update::is_the_service(pid);
+        println!("pipe owner {pid}: {verdict:?}");
+        verdict
+    });
     assert!(matches!(probe, Answer::Refused(ref why) if why.contains("not newer")), "{probe:?}");
 
     let release = Release { tag: format!("v{to}"), version: version::parse(&to), ..Release::default() };
@@ -71,7 +79,7 @@ fn an_all_users_app_is_updated_by_the_service_through_the_launchers_install_path
 #[ignore = "needs the updater service to be stopped or absent: see e2e/launcher_path.ps1"]
 fn with_no_service_the_launcher_is_told_so_at_once_and_leaves_the_update_to_the_normal_route() {
     let started = Instant::now();
-    let answer = artcraft_launcher_updater_client::ask("cadcraft", "99.0.0");
+    let answer = artcraft_launcher_updater_client::ask("cadcraft", "99.0.0", &|_| Ok(()));
     println!("answer without a service: {answer:?} in {:?}", started.elapsed());
     assert!(matches!(answer, Answer::Unavailable(_)), "{answer:?}");
     assert!(!answer.is_installed());

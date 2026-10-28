@@ -99,6 +99,17 @@ job; a decline, a refusal, an error or no service at all leaves the update to th
 (download, then `msiexec` with Windows' own prompt). Mutation check for that side:
 `crates/updater-client/mutation-check.py`.
 
+The pipe's name is fixed, so any local program could create a pipe with that name while the service
+is not running and answer "installed". Two checks stop that from skipping an update. First, before
+sending anything the launcher asks Windows' service manager which process is the running
+`ArtCraftUpdater` service and talks only to that process (`silent_update::is_the_service`). A first
+version of this check looked at the program file of the pipe's owner instead; a real run showed a
+normal user is not allowed to open the system service's process at all, so every real update would
+have quietly taken the prompt route. Second, "installed" is believed only if Windows Installer's own
+records, read again by the launcher's detection, show the release's version; otherwise the normal
+route runs. A program that holds the pipe open and never answers is rejected at connect, before any
+wait.
+
 ## Proven with the real installer and the launcher's own install path
 
 `e2e/launcher_path.ps1` (elevated, one UAC prompt) installs the real updater MSI built by

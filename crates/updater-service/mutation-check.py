@@ -74,14 +74,17 @@ backups = {}
 try:
     for f, old, new, label in MUTANTS:
         path = where(f)
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        crlf = b"\r\n" in raw
+        text = raw.decode("utf-8").replace("\r\n", "\n")
         if text.count(old) != 1:
             results.append((label, "PATTERN NOT FOUND/UNIQUE"))
             continue
-        backups.setdefault(f, text)
-        path.write_text(text.replace(old, new), encoding="utf-8")
+        backups.setdefault(f, raw)
+        mutated = text.replace(old, new)
+        path.write_bytes((mutated.replace("\n", "\r\n") if crlf else mutated).encode("utf-8"))
         code, out = run_tests()
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(raw)
         if code == 0:
             results.append((label, "SURVIVED"))
         elif "error[E" in out or "could not compile" in out:
@@ -90,8 +93,8 @@ try:
             failed = sorted({l.split()[1] for l in out.splitlines() if l.startswith("test ") and l.endswith("FAILED")})
             results.append((label, "killed by " + ", ".join(failed)[:110]))
 finally:
-    for f, text in backups.items():
-        where(f).write_text(text, encoding="utf-8")
+    for f, raw in backups.items():
+        where(f).write_bytes(raw)
 
 for label, status in results:
     print(f"{status:<14.14} | {label}" if status in ("SURVIVED", "DID NOT COMPILE") or status.startswith("PATTERN") else f"killed         | {label}  <- {status[10:]}")

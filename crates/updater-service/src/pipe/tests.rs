@@ -3,7 +3,7 @@
 
 use std::sync::atomic::AtomicU32;
 
-use artcraft_launcher_updater_client::pipe::request;
+use artcraft_launcher_updater_client::pipe::{request, request_verified};
 
 use super::*;
 
@@ -163,4 +163,30 @@ fn the_pipe_is_local_only_and_restricted() {
     assert!(!options.accept_remote, "remote machines could open the pipe");
     assert!(options.security_descriptor.is_some(), "the pipe would take the default descriptor");
     assert_eq!(PIPE_SDDL, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+}
+
+#[test]
+fn a_client_only_sends_to_a_server_it_trusts() {
+    use std::sync::atomic::AtomicUsize;
+    let handled = AtomicUsize::new(0);
+    let handler = |_: &[u8]| {
+        handled.fetch_add(1, Ordering::SeqCst);
+        Ok(Outcome::Installed)
+    };
+    let me = std::process::id();
+    with_server(&config(2000), &handler, &AnyCaller, |path| {
+        // A server the client does not trust gets nothing: the handler never runs.
+        let refused = request_verified(path, br#"{"app":"cadcraft","version":"1.2.3"}"#, Duration::from_secs(5), &|_| Err("no".into()));
+        assert!(matches!(&refused, Err(why) if why.contains("not the updater service")), "{refused:?}");
+        assert_eq!(handled.load(Ordering::SeqCst), 0, "a distrusted server must not receive the request");
+        // The check is given the server's real process id, which here is this process.
+        let seen_cell = std::cell::Cell::new(None);
+        let accepted = request_verified(path, br#"{"app":"cadcraft","version":"1.2.3"}"#, Duration::from_secs(5), &|pid| {
+            seen_cell.set(Some(pid));
+            if pid == me { Ok(()) } else { Err("someone else".into()) }
+        });
+        assert_eq!(seen_cell.get(), Some(me));
+        assert_eq!(accepted.unwrap(), Reply::Ran { outcome: Outcome::Installed });
+        assert_eq!(handled.load(Ordering::SeqCst), 1);
+    });
 }
