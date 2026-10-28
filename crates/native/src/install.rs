@@ -629,7 +629,10 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
         _ => {
             if !path.exists() {
                 if path.components().count() < 2 {
-                    return Err(format!("{} is registered with Windows, but the launcher can't find where it put the program. Reinstall it from here.", app.name));
+                    return Err(format!(
+                        "{} is registered with Windows, but the launcher can't find where it put the program. Reinstall it from here.",
+                        app.name
+                    ));
                 }
                 return Err(format!("{} isn't where it was installed ({})", app.name, path.display()));
             }
