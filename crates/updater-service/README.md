@@ -15,17 +15,21 @@ The caller sends `{ "app", "version" }` over a local named pipe. Nothing else: n
 argument field exists, and an extra field is refused.
 
 1. App must be one of the 13 in the launcher catalog (not the launcher itself).
-2. The app must already be installed **per-machine** (Windows Installer records, through the
-   launcher's own detection code) and the version must be **newer**. The service updates; it never
+2. The app must already be installed **per-machine** according to Windows Installer's own
+   admin-only records (see below), and the version must be **newer**. The service updates; it never
    installs fresh and never downgrades.
-3. Fetch `https://github.com/<repo>/releases/download/v<version>/` into the staging folder, with
+3. Its recorded install folder must be known and inside Program Files. Otherwise the service
+   **declines** (a distinct reply, not an error): the launcher carries on with its normal update
+   route, which asks Windows for permission, so nobody is blocked. The folder is passed to the
+   installer as `INSTALLFOLDER`, so the update stays where the app is.
+4. Fetch `https://github.com/<repo>/releases/download/v<version>/` into the staging folder, with
    the launcher's HTTP code and download allowlist (`fetch.rs`).
-4. The file must be a regular file inside staging, after resolving links.
-5. Its name must be exactly `<app>-<version>-windows-<arch>.msi`.
-6. SHA-256 must equal the release's `SHA256SUMS.txt` entry.
-7. Authenticode must verify (WinTrust, with revocation checking) and the signer `O=` must be
+5. The file must be a regular file inside staging, after resolving links.
+6. Its name must be exactly `<app>-<version>-windows-<arch>.msi`.
+7. SHA-256 must equal the release's `SHA256SUMS.txt` entry.
+8. Authenticode must verify (WinTrust, with revocation checking) and the signer `O=` must be
    exactly `Learning Machines Inc` (`wintrust.rs`, `publisher.rs`).
-8. Run a fixed `msiexec /i <file> /qn /norestart /l*v <log> ALLUSERS=1`.
+9. Run a fixed `msiexec /i <file> /qn /norestart /l*v <log> ALLUSERS=1`.
 
 ## Where it runs (`service.rs`, `pipe.rs`)
 
@@ -52,10 +56,14 @@ Built and tested, **not yet run as a real service or against a real install on a
 | Fetcher against a scripted loopback server (good, tampered body, 404, no installer, allowlist) | `fetch/tests.rs` |
 | Real named pipe: round trip, refusals, silent client, half frame, oversize, one at a time | `pipe/tests.rs` |
 | Startup rules: Program Files only, staging not a link | `service/tests.rs` |
-| 25 mutants of those guards, all killed | `mutation-check.py` |
+| 30 mutants of those guards, all killed | `mutation-check.py` |
 | **Elevated run 1:** the engine's real `msiexec` line updated a renamed per-machine product 1.2.2 to 1.2.3, and a downgrade was refused by Windows Installer (1603); cleaned up | `tests/elevated_install.rs` |
 | **Elevated run 2:** the real service ran as `NT AUTHORITY\SYSTEM`; staging inherited the Program Files ACL (Users read-only); a normal user could not write to the service folder, staging or the exe, nor stop the service; refusals came back in plain words; the real machine-wide records and a real HTTPS fetch worked as SYSTEM; the audit log matched; service removed cleanly | `e2e/` |
-| **Not run:** a real update of a real app, a second Windows account | needs a real newer signed release and another user |
+| **Elevated run 3:** a genuine per-machine install was seen as per-machine by the service's own detection (machine version, component paths), updated in place with `INSTALLFOLDER`, re-registered at the new version, a downgrade refused, and an app outside Program Files declined; cleaned up | `tests/elevated_install.rs` |
+| **Elevated run 3:** a temporary standard Windows account (created and deleted by the script) reached the pipe, got plain refusals, and could not write to the service folder, staging or the exe, nor stop the service | `e2e/user_checks.ps1` |
+| **Not run:** a real update of a real signed Craft App | none of the 13 apps on the dev PC is per-machine; a real per-machine copy plus a newer signed release is needed |
+| **Not run:** the revocation check against a really revoked certificate | no revoked test certificate to hand |
+| **Not covered by the non-elevated mutation run:** the `S-1-5-18` machine-slot rule | pinned by the elevated run (a per-machine product must be seen, a per-user one must not) |
 
 ## Finding fixed: the registry hive is not the install context
 
@@ -68,14 +76,15 @@ it is listed under `Installer\UserData\S-1-5-18`. A real-registry test pins this
 Consequence for custom folders: a per-user install in a custom folder never reaches the service. It
 updates with no UAC prompt through the launcher's per-user route, so nobody is blocked.
 
-## Still open: a true per-machine install in a custom folder
+## Custom install folders
 
-The command line passes no `INSTALLFOLDER`. For a real per-machine install in the default Program
-Files folder that is correct (the package restores it). For a per-machine install in a custom
-folder it is **not proven** that the update stays there. The folder must come from a trusted source
-(Windows Installer's machine component records), never from the caller or a user registry hive: a
-folder chosen by a normal user would let SYSTEM write into a place the user controls. Until built,
-the service should decline these (the launcher then uses its normal UAC route), not fail them.
+- **Per-user installs in a custom folder** never reach the service; they update with no UAC prompt
+  through the launcher's per-user route.
+- **Per-machine installs in Program Files** (default or a subfolder): updated in place by the service.
+- **Per-machine installs elsewhere** (for example `D:\Apps`): declined, so the launcher uses its
+  normal UAC route. They are not blocked. Updating them silently would let SYSTEM write into a
+  folder a normal user may control (a junction swapped in after the check sends the files
+  anywhere). Supporting them needs an ACL check that the folder is admin-only; not built.
 
 ## Not built yet
 
@@ -94,7 +103,7 @@ the service should decline these (the launcher then uses its normal UAC route), 
 cargo test   -p artcraft-launcher-updater-service -j 8
 cargo clippy -p artcraft-launcher-updater-service --all-targets -j 8 -- -D warnings
 cargo fmt    -p artcraft-launcher-updater-service --check
-python crates/updater-service/mutation-check.py .      # 25 mutants, all must be killed
+python crates/updater-service/mutation-check.py .      # 30 mutants, all must be killed
 ```
 
 ## End-to-end run (needs one elevated prompt)

@@ -85,8 +85,16 @@ fn serve(exe: &Path, journal: &Journal, stop: &AtomicBool, running: impl FnOnce(
     let staging = staging_dir(exe, &program_files())?;
     let msiexec = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join(r"System32\msiexec.exe");
     let (fetcher, trust) = (GitHubFetcher::new()?, WinTrust::new()?);
-    let engine =
-        Engine { staging_root: &staging, msiexec: &msiexec, machine: &Registry, fetcher: &fetcher, signatures: &trust, runner: &SystemRunner };
+    let roots = program_files();
+    let engine = Engine {
+        staging_root: &staging,
+        program_files: &roots,
+        msiexec: &msiexec,
+        machine: &Registry,
+        fetcher: &fetcher,
+        signatures: &trust,
+        runner: &SystemRunner,
+    };
     clean(&staging);
     journal.line(&format!("started, staging in {}", staging.display()));
     running();

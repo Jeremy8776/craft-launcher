@@ -72,12 +72,16 @@ pub enum Reply {
     Ran { outcome: Outcome },
     /// Nothing was installed. `reason` is plain text, safe to show.
     Refused { reason: String },
+    /// Nothing was installed because the service leaves this one to the launcher's normal update
+    /// route. Not an error: the launcher carries on with that route.
+    Declined { reason: String },
 }
 
 impl From<&Result<Outcome, Refusal>> for Reply {
     fn from(result: &Result<Outcome, Refusal>) -> Self {
         match result {
             Ok(outcome) => Self::Ran { outcome: *outcome },
+            Err(Refusal::Declined(why)) => Self::Declined { reason: why.clone() },
             Err(refusal) => Self::Refused { reason: refusal.to_string() },
         }
     }
@@ -159,6 +163,9 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Reply>(&bytes).unwrap(), ok);
         let no = Reply::from(&Err(Refusal::NotNewer));
         assert!(matches!(&no, Reply::Refused { reason } if reason.contains("not newer")));
+        // A decline is told apart from a refusal, so the launcher can fall back to its own route.
+        let polite = Reply::from(&Err(Refusal::Declined("installed outside Program Files".into())));
+        assert_eq!(serde_json::to_string(&polite).unwrap(), r#"{"result":"declined","reason":"installed outside Program Files"}"#);
     }
 
     #[test]

@@ -13,7 +13,7 @@ OUT = pathlib.Path(sys.argv[1])
 WIX = pathlib.Path.home() / ".dotnet" / "tools" / "wix.exe"
 
 WXS = """<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="IptzUpdaterE2E" Manufacturer="Iptz Test" Version="$(var.Version)"
+  <Package Name="IptzUpdaterE2E" Manufacturer="Iptz Test" Version="$(var.Version)" ProductCode="$(var.ProductCode)"
            UpgradeCode="7d1c2a50-3b0e-4c55-9a6a-5f0d6e1b9e21" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer IptzUpdaterE2E is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -31,13 +31,14 @@ WXS = """<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
 
 OUT.mkdir(parents=True, exist_ok=True)
 (OUT / "product.wxs").write_text(WXS, encoding="utf-8")
+CODES = {"1.2.2": "{5E4A7C10-1B22-4D33-8E44-0A5B6C7D8E22}", "1.2.3": "{5E4A7C10-1B22-4D33-8E44-0A5B6C7D8E23}"}
 for version in ("1.2.2", "1.2.3"):
     folder = OUT / f"v{version.replace('.', '')}"
     folder.mkdir(exist_ok=True)
     payload = folder / "version.txt"
     payload.write_text(f"IptzUpdaterE2E {version}\n", encoding="utf-8")
     msi = folder / f"cadcraft-{version}-windows-x64.msi"
-    cmd = [str(WIX), "build", "-arch", "x64", "-d", f"Version={version}", "-d", f"Payload={payload}", "-o", str(msi), str(OUT / "product.wxs")]
+    cmd = [str(WIX), "build", "-arch", "x64", "-d", f"Version={version}", "-d", f"ProductCode={CODES[version]}", "-d", f"Payload={payload}", "-o", str(msi), str(OUT / "product.wxs")]
     done = subprocess.run(cmd, capture_output=True, text=True)
     print(version, "->", msi, "OK" if done.returncode == 0 else f"FAILED\n{done.stdout}\n{done.stderr}")
     if done.returncode != 0:

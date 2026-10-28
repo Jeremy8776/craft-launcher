@@ -17,6 +17,9 @@ pub enum Refusal {
     NotInstalled,
     /// The version asked for is not newer than the installed one. No downgrades or reinstalls.
     NotNewer,
+    /// The service can't safely update this app by itself. Nothing is wrong: the launcher should
+    /// use its normal update route, which asks Windows for permission, instead.
+    Declined(String),
     /// The release could not be fetched. The text is for the log, not for parsing.
     Fetch(String),
     /// The package is not a regular file inside the staging folder.
@@ -42,6 +45,7 @@ impl fmt::Display for Refusal {
             Self::BadVersion => f.write_str("that is not a version number"),
             Self::NotInstalled => f.write_str("that app is not installed for all users on this PC"),
             Self::NotNewer => f.write_str("that version is not newer than the one installed"),
+            Self::Declined(why) => write!(f, "left to the normal update ({why})"),
             Self::Fetch(why) => write!(f, "couldn't get the update ({why})"),
             Self::NotStaged => f.write_str("the update was not where the service keeps its downloads"),
             Self::WrongPackage => f.write_str("the update is not the installer for that app"),
@@ -50,6 +54,13 @@ impl fmt::Display for Refusal {
             Self::Unsigned(why) => write!(f, "the update is not validly signed ({why})"),
             Self::WrongPublisher(who) => write!(f, "the update is signed by {who}, not by the Craft App publisher"),
         }
+    }
+}
+
+impl Refusal {
+    /// Whether this is a polite "not me" (the launcher falls back) and not a refusal of something unsafe.
+    pub fn is_decline(&self) -> bool {
+        matches!(self, Self::Declined(_))
     }
 }
 

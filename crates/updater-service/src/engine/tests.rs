@@ -8,6 +8,7 @@ use artcraft_launcher_core::CraftApp;
 
 use super::*;
 use crate::install::Command;
+use crate::machine::Installed;
 use crate::publisher::SignatureCheck;
 
 const PUBLISHER: &str = "Learning Machines Inc";
@@ -42,11 +43,28 @@ impl Signatures for Signer {
     }
 }
 
-/// What is installed per-machine, as a version string (`None`: not installed).
+/// A stand-in for Program Files that every test shares: created once, never removed.
+fn pf_root() -> PathBuf {
+    let root = std::env::temp_dir().join("ArtCraftUpdaterTestPF");
+    std::fs::create_dir_all(root.join("ArtCraft").join("CADCraft")).unwrap();
+    root
+}
+
+/// What is installed per-machine, as a version string (`None`: not installed), in the app's
+/// folder inside the stand-in Program Files.
 struct Mach(Option<&'static str>);
 impl Machine for Mach {
-    fn installed(&self, _: &CraftApp) -> Option<semver::Version> {
-        self.0.map(|v| semver::Version::parse(v).unwrap())
+    fn installed(&self, _: &CraftApp) -> Option<Installed> {
+        let folder = Some(pf_root().join("ArtCraft").join("CADCraft"));
+        self.0.map(|v| Installed { version: semver::Version::parse(v).unwrap(), folder })
+    }
+}
+
+/// Installed at version 1.2.2 in exactly `folder` (which may be missing, or outside Program Files).
+struct MachAt(Option<PathBuf>);
+impl Machine for MachAt {
+    fn installed(&self, _: &CraftApp) -> Option<Installed> {
+        Some(Installed { version: semver::Version::parse("1.2.2").unwrap(), folder: self.0.clone() })
     }
 }
 
@@ -74,12 +92,21 @@ fn run(request: &[u8], fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Re
     run_on(request, &Mach(Some("1.2.2")), fetch, signer, code)
 }
 
-fn run_on(request: &[u8], machine: &Mach, fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Result<Outcome, Refusal>, usize) {
+fn run_on(request: &[u8], machine: &dyn Machine, fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Result<Outcome, Refusal>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let staging = dir.path().join("staging");
     std::fs::create_dir_all(&staging).unwrap();
     let runner = Runs { code, ..Runs::default() };
-    let engine = Engine { staging_root: &staging, msiexec: Path::new("msiexec.exe"), machine, fetcher: fetch, signatures: signer, runner: &runner };
+    let roots = [pf_root()];
+    let engine = Engine {
+        staging_root: &staging,
+        program_files: &roots,
+        msiexec: Path::new("msiexec.exe"),
+        machine,
+        fetcher: fetch,
+        signatures: signer,
+        runner: &runner,
+    };
     let result = engine.handle(request);
     let started = runner.seen.borrow().len();
     (result, started)
@@ -123,8 +150,10 @@ fn the_command_names_only_the_staged_file() {
     std::fs::create_dir_all(&staging).unwrap();
     let runner = Runs { code: Some(0), ..Runs::default() };
     let (fetch, signer) = (good(), signed_by(PUBLISHER));
+    let roots = [pf_root()];
     let engine = Engine {
         staging_root: &staging,
+        program_files: &roots,
         msiexec: Path::new("msiexec.exe"),
         machine: &Mach(Some("1.2.2")),
         fetcher: &fetch,
@@ -137,6 +166,9 @@ fn the_command_names_only_the_staged_file() {
     assert_eq!(&args[0], "/i");
     assert!(PathBuf::from(&args[1]).ends_with("cadcraft-1.2.3-windows-x64.msi"));
     assert_eq!(&args[2..], ["/qn", "/norestart", "/l*v", &args[5], "ALLUSERS=1"]);
+    // And the app stays in the folder Windows Installer says it is in.
+    assert_eq!(seen[0].raw_args.len(), 1);
+    assert!(seen[0].raw_args[0].starts_with("INSTALLFOLDER=\"") && seen[0].raw_args[0].ends_with("ArtCraft\\CADCraft\""), "{:?}", seen[0].raw_args);
 }
 
 #[test]
@@ -212,4 +244,43 @@ fn nothing_runs_when_unsigned_or_signed_by_someone_else() {
         assert!(matches!(result, Err(Refusal::WrongPublisher(_))), "{org}");
         assert_eq!(started, 0);
     }
+}
+
+#[test]
+fn declines_instead_of_failing_when_the_folder_is_unknown_or_outside_program_files() {
+    let (fetch, signer) = (good(), signed_by(PUBLISHER));
+    let outside = tempfile::tempdir().unwrap();
+    let cases: [(&str, MachAt); 3] = [
+        ("unknown folder", MachAt(None)),
+        ("outside Program Files", MachAt(Some(outside.path().to_path_buf()))),
+        ("missing folder", MachAt(Some(pf_root().join("ArtCraft").join("NoSuchApp")))),
+    ];
+    for (label, machine) in cases {
+        let (result, started) = run_on(REQUEST, &machine, &fetch, &signer, Some(0));
+        assert!(matches!(&result, Err(r) if r.is_decline()), "{label}: {result:?}");
+        assert_eq!(started, 0, "{label}");
+    }
+}
+
+#[test]
+fn a_decline_is_not_a_refusal_of_something_unsafe() {
+    assert!(Refusal::Declined("x".into()).is_decline());
+    for refusal in [Refusal::NotInstalled, Refusal::NotNewer, Refusal::HashMismatch, Refusal::WrongPackage, Refusal::UnknownApp] {
+        assert!(!refusal.is_decline(), "{refusal:?}");
+    }
+}
+
+#[test]
+fn a_folder_that_is_a_link_out_of_program_files_is_declined() {
+    // A junction inside the stand-in Program Files that points outside it: resolved, it is outside.
+    let outside = tempfile::tempdir().unwrap();
+    let link = pf_root().join("ArtCraft").join(format!("link-{}", std::process::id()));
+    let _ = std::fs::remove_dir(&link);
+    let made = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(&link).arg(outside.path()).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stdout));
+    let (fetch, signer) = (good(), signed_by(PUBLISHER));
+    let (result, started) = run_on(REQUEST, &MachAt(Some(link.clone())), &fetch, &signer, Some(0));
+    let _ = std::fs::remove_dir(&link);
+    assert!(matches!(&result, Err(r) if r.is_decline()), "{result:?}");
+    assert_eq!(started, 0);
 }

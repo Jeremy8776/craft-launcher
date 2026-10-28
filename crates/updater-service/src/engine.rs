@@ -11,7 +11,7 @@ use crate::install::{Runner, interpret, msi_command};
 use crate::machine::Machine;
 use crate::publisher::{Signatures, require_publisher};
 use crate::request::{self, InstallRequest};
-use crate::stage::{locate, same_checksum, sha256_hex};
+use crate::stage::{dir_inside, locate, same_checksum, sha256_hex};
 
 /// A package the fetcher put in the staging folder, and the checksum its release published.
 #[derive(Debug, Clone)]
@@ -30,6 +30,8 @@ pub trait Fetcher {
 /// Everything the engine needs, passed in so tests can replace the outside world.
 pub struct Engine<'a> {
     pub staging_root: &'a Path,
+    /// The Program Files folders. An app is updated only if its recorded folder is inside one.
+    pub program_files: &'a [PathBuf],
     pub msiexec: &'a Path,
     pub machine: &'a dyn Machine,
     pub fetcher: &'a dyn Fetcher,
@@ -43,8 +45,16 @@ impl Engine<'_> {
         let request = request::parse(request_bytes)?;
         // An update, never a fresh install, and never to the same or an older version.
         let installed = self.machine.installed(request.app).ok_or(Refusal::NotInstalled)?;
-        if !version::is_update(&request.version, &installed) {
+        if !version::is_update(&request.version, &installed.version) {
             return Err(Refusal::NotNewer);
+        }
+        // Where the installed copy is comes from Windows Installer's admin-only machine records. A
+        // copy outside Program Files may sit in a folder a normal user controls, and SYSTEM must not
+        // write into one of those (a link swapped in after the check would send the files anywhere),
+        // so it is left to the launcher's own route, which asks Windows for permission itself.
+        let folder = installed.folder.as_deref().ok_or_else(|| Refusal::Declined("it can't be confirmed where this app is installed".into()))?;
+        if !self.program_files.iter().any(|root| dir_inside(root, folder)) {
+            return Err(Refusal::Declined("this app is installed outside Program Files".into()));
         }
         let fetched = self.fetcher.fetch(request.app, &request.version, self.staging_root).map_err(Refusal::Fetch)?;
 
@@ -55,7 +65,7 @@ impl Engine<'_> {
         }
         require_publisher(self.signatures.check(&staged))?;
 
-        let command = msi_command(self.msiexec, &staged)?;
+        let command = msi_command(self.msiexec, &staged, Some(folder))?;
         let code = self.runner.run(&command).map_err(Refusal::Fetch)?;
         Ok(interpret(code))
     }

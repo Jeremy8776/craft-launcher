@@ -1,24 +1,22 @@
 //! What is installed for all users on this PC. The service only updates what is already there.
 
+use std::path::PathBuf;
+
 use artcraft_launcher_core::CraftApp;
 
-/// The version of `app` installed per-machine, if any.
-pub trait Machine {
-    fn installed(&self, app: &CraftApp) -> Option<semver::Version>;
+/// An app installed per-machine: its version, and the folder it is in when that can be told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub version: semver::Version,
+    /// Where the app's files are, from Windows Installer's own machine records. `None` when they
+    /// don't say, in which case the engine declines.
+    pub folder: Option<PathBuf>,
 }
 
-/// Reads Windows Installer's own record of who a product is installed for, not the Add/Remove
-/// Programs entry. That entry can sit in HKLM for a copy that is really installed for one user
-/// (every app on the development PC is like that), and updating such a copy as if it were
-/// per-machine is exactly what the launcher's `INSTALLATION.md` warns against.
-///
-/// A product is per-machine if, and only if, Windows Installer keeps its record under
-/// `Installer\UserData\S-1-5-18` (the machine's own slot). That key is writable only by SYSTEM
-/// and Administrators, so a normal user can't make a product look per-machine. The uninstall
-/// entries are used only to find which product codes belong to the app. The version comes from the
-/// machine record itself.
-#[cfg(windows)]
-pub struct Registry;
+/// The per-machine copy of `app`, if any.
+pub trait Machine {
+    fn installed(&self, app: &CraftApp) -> Option<Installed>;
+}
 
 /// Windows Installer's packed form of a product code, as used in its registry keys: the first three
 /// groups reversed, then every remaining pair of digits swapped. `None` if `code` is not a GUID.
@@ -45,30 +43,84 @@ pub fn packed_product_code(code: &str) -> Option<String> {
     Some(out)
 }
 
+/// The folder of an app's main program, from the file paths Windows Installer recorded for a
+/// product's components: the folder of the one that is `<stem>.exe` for one of the app's names.
+/// Only plain drive paths count (registry key paths are recorded in the same list).
+pub fn folder_from_paths(paths: &[String], stems: &[&str]) -> Option<PathBuf> {
+    paths.iter().find_map(|path| {
+        let mut chars = path.chars();
+        let drive = chars.next()?.is_ascii_alphabetic() && chars.next() == Some(':') && chars.next() == Some('\\');
+        let (folder, file) = path.rsplit_once('\\')?;
+        let (stem, extension) = file.rsplit_once('.')?;
+        (drive && extension.eq_ignore_ascii_case("exe") && stems.iter().any(|s| s.eq_ignore_ascii_case(stem))).then(|| PathBuf::from(folder))
+    })
+}
+
+/// Reads Windows Installer's own record of who a product is installed for, not the Add/Remove
+/// Programs entry. That entry can sit in HKLM for a copy that is really installed for one user
+/// (every app on the development PC is like that), and updating such a copy as if it were
+/// per-machine is exactly what the launcher's `INSTALLATION.md` warns against.
+///
+/// A product is per-machine if, and only if, Windows Installer keeps its record under
+/// `Installer\UserData\S-1-5-18` (the machine's own slot). That key is writable only by SYSTEM
+/// and Administrators, so a normal user can't make a product look per-machine or change where it
+/// says the files are. The uninstall entries are used only to find which product codes belong to
+/// the app. The version and the folder come from the machine records.
+#[cfg(windows)]
+pub struct Registry;
+
+#[cfg(windows)]
+const MACHINE_SLOT: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18";
+
 #[cfg(windows)]
 impl Registry {
     /// The version Windows Installer has recorded for `product_code` in the machine's own slot.
-    fn machine_version(product_code: &str) -> Option<semver::Version> {
+    pub fn machine_version(product_code: &str) -> Option<semver::Version> {
         use winreg::RegKey;
         use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 
-        let path = format!(
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products\{}\InstallProperties",
-            packed_product_code(product_code)?
-        );
+        let path = format!(r"{MACHINE_SLOT}\Products\{}\InstallProperties", packed_product_code(product_code)?);
         let key = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(path, KEY_READ | KEY_WOW64_64KEY).ok()?;
         let text: String = key.get_value("DisplayVersion").ok()?;
         artcraft_launcher_core::version::parse(&text)
+    }
+
+    /// The key paths Windows Installer recorded for the components of `product_code` (files and
+    /// registry values), from the machine's own slot.
+    pub fn machine_component_paths(product_code: &str) -> Vec<String> {
+        use winreg::RegKey;
+        use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+
+        let Some(packed) = packed_product_code(product_code) else { return Vec::new() };
+        let Ok(root) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(format!(r"{MACHINE_SLOT}\Components"), KEY_READ | KEY_WOW64_64KEY)
+        else {
+            return Vec::new();
+        };
+        root.enum_keys()
+            .flatten()
+            .filter_map(|component| root.open_subkey_with_flags(component, KEY_READ).ok()?.get_value::<String, _>(&packed).ok())
+            .collect()
     }
 }
 
 #[cfg(windows)]
 impl Machine for Registry {
-    fn installed(&self, app: &CraftApp) -> Option<semver::Version> {
+    fn installed(&self, app: &CraftApp) -> Option<Installed> {
         use artcraft_launcher_core::version::compare;
         use artcraft_launcher_native::detect::windows::msi_installs;
+        use std::cmp::Ordering;
 
-        msi_installs(app).iter().filter_map(|m| Self::machine_version(&m.product_code)).max_by(compare)
+        let mut newest: Option<(semver::Version, String)> = None;
+        for install in msi_installs(app) {
+            let Some(version) = Self::machine_version(&install.product_code) else { continue };
+            if newest.as_ref().is_none_or(|(best, _)| compare(&version, best) == Ordering::Greater) {
+                newest = Some((version, install.product_code));
+            }
+        }
+        let (version, code) = newest?;
+        let stems: Vec<&str> = app.stems().collect();
+        let folder = folder_from_paths(&Self::machine_component_paths(&code), &stems);
+        Some(Installed { version, folder })
     }
 }
 
@@ -98,6 +150,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn finds_the_folder_of_the_main_program() {
+        let paths = vec![
+            r"01:\Software\Learning Machines LLC\CADCraft\Version".to_string(),
+            r"C:\Program Files\ArtCraft\CADCraft\resources\icon.png".to_string(),
+            r"C:\Program Files\ArtCraft\CADCraft\cadcraft-cli.exe".to_string(),
+            r"C:\Program Files\ArtCraft\CADCraft\CADCraft.EXE".to_string(),
+        ];
+        assert_eq!(folder_from_paths(&paths, &["cadcraft"]), Some(PathBuf::from(r"C:\Program Files\ArtCraft\CADCraft")));
+        // A former name still counts (PdfCraft shipped as PrintCraft).
+        assert_eq!(
+            folder_from_paths(&[r"D:\Apps\PrintCraft\printcraft.exe".to_string()], &["pdfcraft", "printcraft"]),
+            Some(PathBuf::from(r"D:\Apps\PrintCraft"))
+        );
+    }
+
+    #[test]
+    fn does_not_guess_a_folder() {
+        for paths in [
+            vec![],
+            vec![r"C:\x\cadcraft-cli.exe".to_string()],
+            vec![r"C:\x\cadcraft.dll".to_string()],
+            vec![r"01:\Software\x\cadcraft.exe".to_string()],
+            vec![r"cadcraft.exe".to_string()],
+            vec![r"\\server\share\cadcraft.exe".to_string()],
+        ] {
+            assert_eq!(folder_from_paths(&paths, &["cadcraft"]), None, "{paths:?}");
+        }
+    }
+
     /// Real registry, this PC. The apps here are registered in HKLM's Add/Remove Programs but
     /// Windows Installer records them for one user, so the service must not see them as per-machine.
     #[cfg(windows)]
@@ -107,11 +189,15 @@ mod tests {
         let mut checked = 0;
         for app in artcraft_launcher_core::SUITE {
             for m in msi_installs(&app) {
-                let machine_record = Registry::machine_version(&m.product_code);
-                let user_record = user_slot_has(&m.product_code);
-                if user_record {
-                    assert_eq!(machine_record, None, "{} is recorded for a user and must not count as per-machine", app.id);
+                if user_slot_has(&m.product_code) {
+                    assert_eq!(
+                        Registry::machine_version(&m.product_code),
+                        None,
+                        "{} is recorded for a user and must not count as per-machine",
+                        app.id
+                    );
                     assert_eq!(Registry.installed(&app), None, "{}", app.id);
+                    assert!(Registry::machine_component_paths(&m.product_code).is_empty(), "{}", app.id);
                     checked += 1;
                 }
             }

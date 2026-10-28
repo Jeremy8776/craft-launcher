@@ -36,8 +36,8 @@ MUTANTS = [
     ("install.rs", "\"ALLUSERS=1\".into(),", "\"ALLUSERS=1\".into(),\n            \"REBOOT=Force\".into(),", "extra installer property"),
     ("install.rs", "if text.chars().any(|c| c == '\"' || c.is_control()) {", "if false {", "quote/control check removed"),
     ("engine.rs", "self.machine.installed(request.app).ok_or(Refusal::NotInstalled)?",
-     "self.machine.installed(request.app).unwrap_or(semver::Version::new(0, 0, 0))", "installed-per-machine check skipped"),
-    ("engine.rs", "if !version::is_update(&request.version, &installed) {", "if false {", "newer-only check removed"),
+     "self.machine.installed(request.app).unwrap_or(crate::machine::Installed { version: semver::Version::new(0, 0, 0), folder: None })", "installed-per-machine check skipped"),
+    ("engine.rs", "if !version::is_update(&request.version, &installed.version) {", "if false {", "newer-only check removed"),
     ("wire.rs", "if len > max {", "if false {", "frame length limit removed"),
     ("pipe.rs", "!stream.client_process_id().is_ok_and(|pid| callers.allow(pid))", "false", "caller check bypassed"),
     ("pipe.rs", ".accept_remote(false)", ".accept_remote(true)", "pipe open to remote machines"),
@@ -46,6 +46,11 @@ MUTANTS = [
     ("fetch.rs", "Origin::GitHub => download_url_under(url, prefix),", "Origin::GitHub => true,", "download allowlist off"),
     ("fetch.rs", "&file, 0, &sha256,", '&file, 0, "",', "checksum not passed to the downloader"),
     ("service.rs", "dir != root && dir.starts_with(&root)", "true", "Program Files containment removed"),
+    ("engine.rs", "if !self.program_files.iter().any(|root| dir_inside(root, folder)) {", "if false {", "outside-Program-Files decline removed"),
+    ("engine.rs", "msi_command(self.msiexec, &staged, Some(folder))?", "msi_command(self.msiexec, &staged, None)?", "install folder not passed"),
+    ("stage.rs", "dir != root && dir.starts_with(&root) && dir.is_dir()", "true", "folder containment check removed"),
+    ("install.rs", "let text = text.trim_end_matches('\\\\');", "let text = &*text;", "trailing backslash not trimmed"),
+    ("wire.rs", "Err(Refusal::Declined(why)) => Self::Declined { reason: why.clone() },", "", "decline not told apart from a refusal"),
     ("service.rs", "meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0 || !meta.is_dir()", "false", "staging link check removed"),
 ]
 

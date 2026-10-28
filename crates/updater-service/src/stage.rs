@@ -30,6 +30,12 @@ pub fn locate(root: &Path, file: &Path) -> Result<PathBuf, Refusal> {
     Ok(resolved)
 }
 
+/// Whether `dir` is a folder strictly inside `root`, once links are resolved.
+pub fn dir_inside(root: &Path, dir: &Path) -> bool {
+    let (Ok(root), Ok(dir)) = (dunce::canonicalize(root), dunce::canonicalize(dir)) else { return false };
+    dir != root && dir.starts_with(&root) && dir.is_dir()
+}
+
 /// The lower-case SHA-256 of `file`, read in blocks. Stops at [`MAX_PACKAGE_BYTES`].
 pub fn sha256_hex(file: &Path) -> Result<String, Refusal> {
     let mut input = File::open(file).map_err(|_| Refusal::NotStaged)?;

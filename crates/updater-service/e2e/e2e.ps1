@@ -10,6 +10,7 @@ param(
   [Parameter(Mandatory = $true)][string] $Root,
   [Parameter(Mandatory = $true)][string] $ServiceExe,
   [Parameter(Mandatory = $true)][string] $InstallTest,
+  [Parameter(Mandatory = $true)][string] $ClientExe,
   [switch] $SkipInstallTest
 )
 $ErrorActionPreference = 'Continue'
@@ -58,6 +59,40 @@ try {
   }
   Log ("staging exists=" + (Test-Path (Join-Path $Dir 'staging')))
   Log ("staging owner/acl: " + ((Get-Acl (Join-Path $Dir 'staging')).Sddl))
+  # ---- Part 3: a second, standard Windows account ----
+  $user = 'ArtCraftE2EUser'
+  $pub = 'C:\Users\Public\ArtCraftE2E'
+  try {
+    if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $user }
+    # A throwaway password that lives only in this process. It is never written anywhere.
+    $chars = [char[]]'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    $plain = (-join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })) + 'aA1!'
+    $secure = ConvertTo-SecureString $plain -AsPlainText -Force
+    $plain = $null
+    New-LocalUser -Name $user -Password $secure -PasswordNeverExpires -AccountNeverExpires -Description 'Temporary updater test account' | Out-Null
+    Add-LocalGroupMember -Group 'Users' -Member $user
+    New-Item -ItemType Directory -Path $pub -Force | Out-Null
+    Copy-Item -LiteralPath $ClientExe -Destination (Join-Path $pub 'client.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $Root 'user_checks.ps1') -Destination (Join-Path $pub 'user_checks.ps1') -Force
+    & icacls.exe $pub /grant "${user}:(OI)(CI)M" | Out-Null
+    $cred = New-Object System.Management.Automation.PSCredential(".\$user", $secure)
+    Log "second account created: $user (standard user)"
+    Start-Process -FilePath powershell.exe -Credential $cred -LoadUserProfile -WorkingDirectory "$env:SystemRoot\System32" -WindowStyle Hidden -Wait `
+      -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $pub 'user_checks.ps1'), '-Out', (Join-Path $pub 'result.txt'), '-Client', (Join-Path $pub 'client.exe')
+    if (Test-Path (Join-Path $pub 'result.txt')) {
+      Get-Content (Join-Path $pub 'result.txt') | ForEach-Object { Log "  2nd| $_" }
+      Copy-Item (Join-Path $pub 'result.txt') (Join-Path $Root 'second-account-results.txt') -Force
+    } else { Log '  2nd| NO RESULT FILE (the second account could not run the checks)' }
+  }
+  catch { Log "second account error: $($_.Exception.Message)" }
+  finally {
+    $sid = (Get-LocalUser -Name $user -ErrorAction SilentlyContinue).SID.Value
+    if ($sid) { Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid } | Remove-CimInstance -ErrorAction SilentlyContinue }
+    if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $user }
+    Remove-Item -LiteralPath $pub -Recurse -Force -ErrorAction SilentlyContinue
+    Log ("second account removed: user=" + [bool](Get-LocalUser -Name $user -ErrorAction SilentlyContinue) + " publicDir=" + (Test-Path $pub))
+  }
+
   New-Item -ItemType File -Path (Join-Path $Root 'service-ready') -Force | Out-Null
   $answered = WaitFor { Test-Path (Join-Path $Root 'client-done') } 600
   Log "client finished=$answered"

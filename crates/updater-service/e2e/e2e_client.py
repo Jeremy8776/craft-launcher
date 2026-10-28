@@ -29,15 +29,14 @@ replies = [json.loads(l[l.index("REPLY ") + 6:]) for l in done.stdout.splitlines
 check("client test program ran", done.returncode == 0, done.stdout[-300:] + done.stderr[-300:] if done.returncode else "")
 by = {r["label"]: r["reply"] for r in replies}
 text = lambda label: json.dumps(by.get(label, {}))
-# Every Craft app on a PC that used the launcher has a machine-wide Windows Installer record, so a far-future
-# version passes the installed/newer rules and is stopped at the fetch (no such release on GitHub).
-check("machine-wide app, far-future version: passes the rules, stopped at fetch", "has no release" in text("not-installed"), text("not-installed"))
+# On a PC where the apps are installed for one user (not per-machine), the service has nothing to update.
+check("app installed for one user is 'not installed for all users'", "not installed for all users" in text("not-installed"), text("not-installed"))
 check("unknown app refused", "not part of the Craft App Suite" in text("unknown-app"), text("unknown-app"))
 check("the launcher itself refused", "not part of the Craft App Suite" in text("launcher"), text("launcher"))
 check("garbage refused", "not understood" in text("garbage"), text("garbage"))
 check("extra field (a path) refused", "not understood" in text("path-field"), text("path-field"))
 check("oversize refused", "too large" in text("oversize"), text("oversize"))
-check("service still answers after the bad ones", "has no release" in text("after"), text("after"))
+check("service still answers after the bad ones", "not installed for all users" in text("after"), text("after"))
 
 # 3. A normal user can't write where the checks depend on it.
 for label, target in (("service folder", DIR), ("staging folder", DIR / "staging")):
