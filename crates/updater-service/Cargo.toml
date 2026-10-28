@@ -1,0 +1,45 @@
+[package]
+name = "artcraft-launcher-updater-service"
+description = "ArtCraft updater service engine: installs signed Craft App updates for per-machine installs without a UAC prompt per update (spike)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+artcraft-launcher-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+sha2 = "0.10"
+# Resolves junctions/symlinks the same way the launcher's own installer does (a no-op off Windows).
+dunce = "1"
+
+[target.'cfg(windows)'.dependencies]
+# Authenticode checks through WinTrust (already used by the launcher's native crate).
+verifysign = "1"
+# The launcher's own detection and download code, so the service and the launcher agree on what
+# "installed" means and there is one download path with one URL allowlist.
+artcraft-launcher-native = { workspace = true }
+# Reads Windows Installer's own record of who a product is installed for. Same version the
+# launcher's native crate already uses.
+winreg = "0.55"
+# The pipe the launcher talks to. Safe wrappers over named pipes: a security descriptor on the
+# pipe, local-only, and the client's process id. 0BSD OR Apache-2.0.
+interprocess = "2"
+# Builds the wide-string form of the pipe's security descriptor (already in the tree via
+# interprocess). MIT OR Apache-2.0.
+widestring = "1"
+# The service shell (control handler and dispatcher), no `unsafe` in our code. MIT OR Apache-2.0.
+windows-service = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Lets the fetcher read releases from a loopback server, for tests. Release builds never enable it.
+local-mirror = []
