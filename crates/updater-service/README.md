@@ -99,10 +99,33 @@ job; a decline, a refusal, an error or no service at all leaves the update to th
 (download, then `msiexec` with Windows' own prompt). Mutation check for that side:
 `crates/updater-client/mutation-check.py`.
 
+## Proven with the real installer and the launcher's own install path
+
+`e2e/launcher_path.ps1` (elevated, one UAC prompt) installs the real updater MSI built by
+`packaging/windows/package-updater.ps1`, then a real signed per-machine CADCraft 0.13.0.
+`e2e/launcher_path_user.ps1` then runs, as a normal user, the ignored test
+`crates/native/tests/windows_all_users_update.rs`, which calls the launcher's `install::install`
+for CADCraft 0.14.0 with an asset URL that refuses connections. Result of the last run: the service
+installed 0.14.0 in 3.3 s; the launcher made no download folder and showed no prompt; Windows
+Installer's records, read by the launcher's own detection, said 0.14.0; a normal user could not write
+to the service folder, staging or the program, and could not stop the service. With the service
+stopped, `ask` answered "unavailable" in under a millisecond (the launcher then takes its normal
+route). Uninstalling the updater MSI left no service, folder or registry value.
+
+`e2e/updater_upgrade.ps1` (elevated) covers the updater package itself: 0.9.0 installed, then 0.9.1
+installed over the running service (new process, version record and Apps and features entry moved to
+0.9.1, one entry only, pipe still there), going back to 0.9.0 refused with the service untouched,
+and a clean uninstall (no service, folder, registry value or entry left).
+
+Not covered: the launcher's normal route actually running after a decline (covered by unit tests
+only, since it would show a Windows prompt), a signed updater MSI (the builds were unsigned because
+no signing secrets are set here), and the revocation check against a really revoked certificate.
+
 ## Not built yet
 
-- **Per-machine launcher MSI** that installs the service into Program Files and registers it
-  (WiX `ServiceInstall`, `LocalSystem`). The launcher MSI is per-user today.
+- **Release wiring** for the updater MSI. `packaging/windows/package-updater.ps1` builds, signs and
+  checks it, but the release workflow (a shared one in `craft-common-actions`) does not call it yet,
+  so it is not published with a release.
 - **Launcher side, offer to turn it on:** the launcher already asks the service (see below), but has
   no screen yet that offers "silent updates for all-user installs" and installs the service.
 - **Publisher string.** The certificate says `Learning Machines Inc`; version resources and
