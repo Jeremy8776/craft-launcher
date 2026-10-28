@@ -42,6 +42,14 @@ impl Signatures for Signer {
     }
 }
 
+/// What is installed per-machine, as a version string (`None`: not installed).
+struct Mach(Option<&'static str>);
+impl Machine for Mach {
+    fn installed(&self, _: &CraftApp) -> Option<semver::Version> {
+        self.0.map(|v| semver::Version::parse(v).unwrap())
+    }
+}
+
 #[derive(Default)]
 struct Runs {
     seen: RefCell<Vec<Command>>,
@@ -63,14 +71,35 @@ fn signed_by(org: &str) -> Signer {
 
 /// Runs `request` through an engine; returns the result and how many times msiexec was started.
 fn run(request: &[u8], fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Result<Outcome, Refusal>, usize) {
+    run_on(request, &Mach(Some("1.2.2")), fetch, signer, code)
+}
+
+fn run_on(request: &[u8], machine: &Mach, fetch: &Fetch, signer: &Signer, code: Option<i32>) -> (Result<Outcome, Refusal>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let staging = dir.path().join("staging");
     std::fs::create_dir_all(&staging).unwrap();
     let runner = Runs { code, ..Runs::default() };
-    let engine = Engine { staging_root: &staging, msiexec: Path::new("msiexec.exe"), fetcher: fetch, signatures: signer, runner: &runner };
+    let engine = Engine { staging_root: &staging, msiexec: Path::new("msiexec.exe"), machine, fetcher: fetch, signatures: signer, runner: &runner };
     let result = engine.handle(request);
     let started = runner.seen.borrow().len();
     (result, started)
+}
+
+#[test]
+fn only_updates_what_is_installed_per_machine_and_only_forward() {
+    let (fetch, signer) = (good(), signed_by(PUBLISHER));
+    let (result, started) = run_on(REQUEST, &Mach(None), &fetch, &signer, Some(0));
+    assert_eq!((result, started), (Err(Refusal::NotInstalled), 0));
+    for installed in ["1.2.3", "1.2.4", "2.0.0"] {
+        let (result, started) = run_on(REQUEST, &Mach(Some(installed)), &fetch, &signer, Some(0));
+        assert_eq!((result, started), (Err(Refusal::NotNewer), 0), "installed {installed}");
+    }
+    // A pre-release recorded as its plain numbers counts as current, as in the launcher.
+    let (result, _) = run_on(br#"{"app":"cadcraft","version":"1.2.3-rc.1"}"#, &Mach(Some("1.2.3")), &fetch, &signer, Some(0));
+    assert_eq!(result, Err(Refusal::NotNewer));
+    for installed in ["1.2.2", "1.0.0", "0.9.9", "1.2.3-rc.1"] {
+        assert_eq!(run_on(REQUEST, &Mach(Some(installed)), &fetch, &signer, Some(0)).0, Ok(Outcome::Installed), "installed {installed}");
+    }
 }
 
 #[test]
@@ -94,7 +123,14 @@ fn the_command_names_only_the_staged_file() {
     std::fs::create_dir_all(&staging).unwrap();
     let runner = Runs { code: Some(0), ..Runs::default() };
     let (fetch, signer) = (good(), signed_by(PUBLISHER));
-    let engine = Engine { staging_root: &staging, msiexec: Path::new("msiexec.exe"), fetcher: &fetch, signatures: &signer, runner: &runner };
+    let engine = Engine {
+        staging_root: &staging,
+        msiexec: Path::new("msiexec.exe"),
+        machine: &Mach(Some("1.2.2")),
+        fetcher: &fetch,
+        signatures: &signer,
+        runner: &runner,
+    };
     engine.handle(REQUEST).unwrap();
     let seen = runner.seen.borrow();
     let args: Vec<String> = seen[0].args.iter().map(|a| a.to_string_lossy().into_owned()).collect();

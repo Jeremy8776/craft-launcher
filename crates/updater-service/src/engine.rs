@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 
 use artcraft_launcher_core::CraftApp;
 use artcraft_launcher_core::release::valid_file_name;
+use artcraft_launcher_core::version;
 
 use crate::error::{Outcome, Refusal};
 use crate::install::{Runner, interpret, msi_command};
+use crate::machine::Machine;
 use crate::publisher::{Signatures, require_publisher};
 use crate::request::{self, InstallRequest};
 use crate::stage::{locate, same_checksum, sha256_hex};
@@ -29,6 +31,7 @@ pub trait Fetcher {
 pub struct Engine<'a> {
     pub staging_root: &'a Path,
     pub msiexec: &'a Path,
+    pub machine: &'a dyn Machine,
     pub fetcher: &'a dyn Fetcher,
     pub signatures: &'a dyn Signatures,
     pub runner: &'a dyn Runner,
@@ -38,6 +41,11 @@ impl Engine<'_> {
     /// Handles one request from the launcher. `Err` means nothing was installed.
     pub fn handle(&self, request_bytes: &[u8]) -> Result<Outcome, Refusal> {
         let request = request::parse(request_bytes)?;
+        // An update, never a fresh install, and never to the same or an older version.
+        let installed = self.machine.installed(request.app).ok_or(Refusal::NotInstalled)?;
+        if !version::is_update(&request.version, &installed) {
+            return Err(Refusal::NotNewer);
+        }
         let fetched = self.fetcher.fetch(request.app, &request.version, self.staging_root).map_err(Refusal::Fetch)?;
 
         let staged = locate(self.staging_root, &fetched.file)?;

@@ -22,6 +22,21 @@ dunce = "1"
 [target.'cfg(windows)'.dependencies]
 # Authenticode checks through WinTrust (already used by the launcher's native crate).
 verifysign = "1"
+# The launcher's own detection and download code, so the service and the launcher agree on what
+# "installed" means and there is one download path with one URL allowlist.
+artcraft-launcher-native = { workspace = true }
+# The pipe the launcher talks to. Safe wrappers over named pipes: a security descriptor on the
+# pipe, local-only, and the client's process id. 0BSD OR Apache-2.0.
+interprocess = "2"
+# Builds the wide-string form of the pipe's security descriptor (already in the tree via
+# interprocess). MIT OR Apache-2.0.
+widestring = "1"
+# The service shell (control handler and dispatcher), no `unsafe` in our code. MIT OR Apache-2.0.
+windows-service = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# Lets the fetcher read releases from a loopback server, for tests. Release builds never enable it.
+local-mirror = []

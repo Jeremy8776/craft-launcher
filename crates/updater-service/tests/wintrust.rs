@@ -14,6 +14,10 @@ use artcraft_launcher_updater_service::error::Refusal;
 use artcraft_launcher_updater_service::publisher::{SignatureCheck, Signatures, require_publisher};
 use artcraft_launcher_updater_service::wintrust::WinTrust;
 
+fn trust() -> WinTrust {
+    WinTrust::new().unwrap()
+}
+
 fn system_file(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into())).join(name)
 }
@@ -27,7 +31,7 @@ fn installed_craft_exe() -> Option<PathBuf> {
 
 #[test]
 fn a_microsoft_file_is_signed_but_not_by_us() {
-    let check = WinTrust.check(&system_file("explorer.exe"));
+    let check = trust().check(&system_file("explorer.exe"));
     match &check {
         SignatureCheck::Valid { organization } => assert_eq!(organization.as_deref(), Some("Microsoft Corporation")),
         SignatureCheck::Invalid(why) => panic!("explorer.exe should verify: {why}"),
@@ -40,7 +44,7 @@ fn an_unsigned_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("plain.msi");
     std::fs::write(&file, b"not an installer").unwrap();
-    let check = WinTrust.check(&file);
+    let check = trust().check(&file);
     assert!(matches!(check, SignatureCheck::Invalid(_)), "{check:?}");
     assert!(matches!(require_publisher(check), Err(Refusal::Unsigned(_))));
 }
@@ -48,7 +52,7 @@ fn an_unsigned_file_is_refused() {
 #[test]
 fn the_installed_craft_exe_is_accepted() {
     let Some(exe) = installed_craft_exe() else { return };
-    let check = WinTrust.check(&exe);
+    let check = trust().check(&exe);
     assert_eq!(require_publisher(check.clone()), Ok(()), "{check:?}");
 }
 
@@ -62,7 +66,7 @@ fn a_craft_exe_changed_after_signing_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("cadcraft.exe");
     std::fs::write(&copy, &bytes).unwrap();
-    let check = WinTrust.check(&copy);
+    let check = trust().check(&copy);
     assert!(matches!(check, SignatureCheck::Invalid(_)), "a tampered file verified: {check:?}");
     assert!(matches!(require_publisher(check), Err(Refusal::Unsigned(_))));
 }

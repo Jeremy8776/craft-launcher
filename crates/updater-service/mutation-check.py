@@ -35,6 +35,18 @@ MUTANTS = [
     ("request.rs", "if bytes.len() > MAX_REQUEST_BYTES {", "if false {", "request size cap removed"),
     ("install.rs", "\"ALLUSERS=1\".into(),", "\"ALLUSERS=1\".into(),\n            \"REBOOT=Force\".into(),", "extra installer property"),
     ("install.rs", "if text.chars().any(|c| c == '\"' || c.is_control()) {", "if false {", "quote/control check removed"),
+    ("engine.rs", "self.machine.installed(request.app).ok_or(Refusal::NotInstalled)?",
+     "self.machine.installed(request.app).unwrap_or(semver::Version::new(0, 0, 0))", "installed-per-machine check skipped"),
+    ("engine.rs", "if !version::is_update(&request.version, &installed) {", "if false {", "newer-only check removed"),
+    ("wire.rs", "if len > max {", "if false {", "frame length limit removed"),
+    ("pipe.rs", "!stream.client_process_id().is_ok_and(|pid| callers.allow(pid))", "false", "caller check bypassed"),
+    ("pipe.rs", ".accept_remote(false)", ".accept_remote(true)", "pipe open to remote machines"),
+    ("pipe.rs", '"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"', '"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)(A;;GRGW;;;WD)"', "pipe open to everyone"),
+    ("pipe.rs", "MAX_REQUEST_BYTES, Instant::now() + deadline", "usize::MAX, Instant::now() + deadline", "server-side request limit removed"),
+    ("fetch.rs", "Origin::GitHub => download_url_under(url, prefix),", "Origin::GitHub => true,", "download allowlist off"),
+    ("fetch.rs", "&file, 0, &sha256,", '&file, 0, "",', "checksum not passed to the downloader"),
+    ("service.rs", "dir != root && dir.starts_with(&root)", "true", "Program Files containment removed"),
+    ("service.rs", "meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0 || !meta.is_dir()", "false", "staging link check removed"),
 ]
 
 

@@ -13,6 +13,10 @@ pub enum Refusal {
     UnknownApp,
     /// The version is not a plain version number.
     BadVersion,
+    /// The app has no per-machine copy to update. The service updates; it never installs fresh.
+    NotInstalled,
+    /// The version asked for is not newer than the installed one. No downgrades or reinstalls.
+    NotNewer,
     /// The release could not be fetched. The text is for the log, not for parsing.
     Fetch(String),
     /// The package is not a regular file inside the staging folder.
@@ -36,6 +40,8 @@ impl fmt::Display for Refusal {
             Self::Malformed => f.write_str("the request was not understood"),
             Self::UnknownApp => f.write_str("that app is not part of the Craft App Suite"),
             Self::BadVersion => f.write_str("that is not a version number"),
+            Self::NotInstalled => f.write_str("that app is not installed for all users on this PC"),
+            Self::NotNewer => f.write_str("that version is not newer than the one installed"),
             Self::Fetch(why) => write!(f, "couldn't get the update ({why})"),
             Self::NotStaged => f.write_str("the update was not where the service keeps its downloads"),
             Self::WrongPackage => f.write_str("the update is not the installer for that app"),
@@ -50,7 +56,8 @@ impl fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 /// The installer ran. This is what came of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     /// Installed.
     Installed,

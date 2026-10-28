@@ -26,12 +26,21 @@
 
 pub mod engine;
 pub mod error;
+#[cfg(windows)]
+pub mod fetch;
 pub mod install;
+pub mod journal;
+pub mod machine;
+#[cfg(windows)]
+pub mod pipe;
 pub mod publisher;
 pub mod request;
+#[cfg(windows)]
+pub mod service;
 pub mod stage;
 #[cfg(windows)]
 pub mod wintrust;
+pub mod wire;
 
 pub use engine::{Engine, Fetched, Fetcher};
 pub use error::{Outcome, Refusal};
