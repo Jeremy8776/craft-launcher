@@ -17,6 +17,7 @@
 //! ([`is_the_service`]), and it believes "installed" only after Windows Installer's own records
 //! show the release's version ([`update`]).
 
+use artcraft_launcher_core::catalog::AppKind;
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::version::Version;
 use artcraft_launcher_core::{CraftApp, PackageKind};
@@ -83,6 +84,10 @@ pub(crate) fn update(
     release: &Release,
     cancelled: &dyn Fn() -> bool,
 ) -> Silent {
+    // The service fetches from `storytold` only, so a community app is never sent to it.
+    if app.kind != AppKind::Official {
+        return Silent::Normal;
+    }
     // The service is asked by version number. A release known only by its tag cannot be named.
     let Some(version) = release.version.as_ref() else {
         return Silent::Normal;
@@ -232,6 +237,14 @@ mod tests {
         assert_eq!(Silent::Done.settled(), Some(Ok(())));
         assert_eq!(Silent::Cancelled.settled(), Some(Err(artcraft_launcher_core::protocol::CANCELLED.to_string())));
         assert_eq!(Silent::Normal.settled(), None);
+    }
+
+    #[test]
+    fn a_community_app_is_never_sent_to_the_service() {
+        let service = Scripted::says(Answer::Installed);
+        let community = SUITE.iter().find(|app| app.kind == AppKind::Community).unwrap();
+        assert_eq!(update(&service, &shows("1.2.3"), community, &release("1.2.3"), &|| false), Silent::Normal);
+        assert!(service.asked.borrow().is_empty());
     }
 
     #[test]

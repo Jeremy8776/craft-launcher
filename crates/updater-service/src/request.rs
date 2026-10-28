@@ -1,5 +1,6 @@
 //! The one message a caller can send: which app, which version.
 
+use artcraft_launcher_core::catalog::AppKind;
 use artcraft_launcher_core::{CraftApp, SUITE};
 use serde::Deserialize;
 
@@ -36,6 +37,11 @@ pub fn parse(bytes: &[u8]) -> Result<InstallRequest, Refusal> {
     // Only the apps in the catalog. The launcher updates itself another way, so its id is not
     // in `SUITE` and is refused here.
     let app = SUITE.iter().find(|a| a.id == wire.app).ok_or(Refusal::UnknownApp)?;
+    // A community app lives in someone else's repository and is signed by someone else. SYSTEM
+    // fetches from `storytold` only, so it is left to the launcher's own route.
+    if app.kind != AppKind::Official {
+        return Err(Refusal::Declined("this is a community app, updated the normal way".into()));
+    }
     if wire.version.len() > MAX_VERSION_LEN {
         return Err(Refusal::BadVersion);
     }
@@ -54,11 +60,21 @@ mod tests {
     }
 
     #[test]
-    fn accepts_every_catalog_app() {
-        for app in SUITE {
+    fn accepts_every_official_app() {
+        for app in SUITE.iter().filter(|a| a.kind == AppKind::Official) {
             let parsed = parse(&req(app.id, "1.2.3")).unwrap();
             assert_eq!(parsed.app.id, app.id);
             assert_eq!(parsed.version.to_string(), "1.2.3");
+        }
+    }
+
+    #[test]
+    fn declines_a_community_app_instead_of_fetching_it() {
+        let community: Vec<_> = SUITE.iter().filter(|a| a.kind == AppKind::Community).collect();
+        assert!(!community.is_empty(), "the catalog has no community app to test with");
+        for app in community {
+            let result = parse(&req(app.id, "1.2.3"));
+            assert!(matches!(&result, Err(r) if r.is_decline()), "{}: {result:?}", app.id);
         }
     }
 

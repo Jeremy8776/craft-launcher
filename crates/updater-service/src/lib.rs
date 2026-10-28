@@ -9,7 +9,8 @@
 //!
 //! 1. The caller names an app and a version. It never names a path, an URL or an installer
 //!    argument. The worst a local process can ask for is an official, signed release.
-//! 2. Only the 13 apps in the launcher's catalog are accepted, not the launcher itself.
+//! 2. Only the official apps in the launcher's catalog are accepted, not the launcher itself
+//!    and not a community app (its repository and signer are not ours).
 //! 3. The package must sit inside the service's own staging folder, after resolving links. The
 //!    folder is under Program Files and inherits its ACL (by default only SYSTEM, Administrators
 //!    and TrustedInstaller write there). The service relies on that default and does not read it;

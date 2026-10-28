@@ -6,7 +6,7 @@ prompt for every update.
 ## Why
 
 A per-machine update today runs `msiexec /i ... ALLUSERS=1`, so Windows asks for permission each
-time. With 13 apps that is a prompt per app. Chrome, Adobe, Firefox and Edge solve this the same
+time. With a dozen apps that is a prompt per app. Chrome, Adobe, Firefox and Edge solve this the same
 way: one UAC prompt at install, then a SYSTEM service does the updating.
 
 ## How a request is handled (`engine.rs`)
@@ -14,7 +14,8 @@ way: one UAC prompt at install, then a SYSTEM service does the updating.
 The caller sends `{ "app", "version" }` over a local named pipe. Nothing else: no path, URL or
 argument field exists, and an extra field is refused.
 
-1. App must be one of the 13 in the launcher catalog (not the launcher itself).
+1. App must be one of the official apps in the launcher catalog (not the launcher itself, and
+   not a community app, which the service **declines**: it fetches from `storytold` only).
 2. The app must already be installed **per-machine** according to Windows Installer's own
    admin-only records (see below), and the version must be **newer**. The service updates; it never
    installs fresh and never downgrades.
@@ -74,7 +75,7 @@ Built and tested, **not yet run as a real service or against a real install on a
 ## Finding fixed: the registry hive is not the install context
 
 The first version trusted the Add/Remove Programs entry (HKLM or HKCU) to say whether an app was
-per-machine. On the development PC all 13 apps have an HKLM entry but are recorded by Windows
+per-machine. On the development PC every app has an HKLM entry but are recorded by Windows
 Installer for one user (`Installer\UserData\S-1-5-21-...`), so the service wrongly treated them as
 per-machine. It now asks Windows Installer's own admin-only record: a product is per-machine only if
 it is listed under `Installer\UserData\S-1-5-18`. A real-registry test pins this (`machine.rs`).
