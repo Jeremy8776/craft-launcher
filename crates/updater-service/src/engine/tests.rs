@@ -143,6 +143,8 @@ fn passes_on_what_the_installer_said() {
     assert_eq!(run(REQUEST, &good(), &signed_by(PUBLISHER), Some(1603)).0, Ok(Outcome::Failed(1603)));
 }
 
+// Windows only: the install folder is a Windows path (backslashes).
+#[cfg(windows)]
 #[test]
 fn the_command_names_only_the_staged_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -270,6 +272,8 @@ fn a_decline_is_not_a_refusal_of_something_unsafe() {
     }
 }
 
+// Windows only: it makes an NTFS junction with `mklink /J`.
+#[cfg(windows)]
 #[test]
 fn a_folder_that_is_a_link_out_of_program_files_is_declined() {
     // A junction inside the stand-in Program Files that points outside it: resolved, it is outside.
