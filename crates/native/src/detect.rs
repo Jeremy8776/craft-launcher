@@ -369,12 +369,12 @@ pub mod windows {
     /// leave a per-machine record. So the folder any hive or view recorded is tried first (this finds
     /// a custom folder), then the usual folders of every scope. This only decides which exe "Open"
     /// runs and where "Show in folder" goes. An update never takes its folder from here
-    /// (`location_is_in_record_scope`), and the record's scope is unchanged.
-    fn exe_in_any_scope(app: &CraftApp) -> Option<PathBuf> {
-        let recorded = UNINSTALL_ROOTS.into_iter().find_map(|(hive, flags)| exe_in_folder(app, &install_dir(app, hive, flags)?));
-        if recorded.is_some() {
-            return recorded;
-        }
+    /// (`location_is_in_record_scope`), and the record's scope is unchanged. Every candidate is
+    /// collected and the one whose own version is the record's is chosen, so a leftover older copy in
+    /// another scope is not opened under the newer record's version (`pick_candidate`).
+    fn exe_in_any_scope(app: &CraftApp, version: Option<&version::Version>) -> Option<PathBuf> {
+        let mut found: Vec<PathBuf> =
+            UNINSTALL_ROOTS.into_iter().filter_map(|(hive, flags)| exe_in_folder(app, &install_dir(app, hive, flags)?)).collect();
         let mut roots: Vec<PathBuf> = std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join("Programs")).into_iter().collect();
         for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
             if let Some(pf) = std::env::var_os(var).map(PathBuf::from)
@@ -383,17 +383,25 @@ pub mod windows {
                 roots.push(pf);
             }
         }
-        exe_in_roots(app, roots)
+        found.extend(exe_in_roots(app, roots));
+        pick_candidate(found, version, executable_version)
+    }
+
+    /// The first candidate whose version is `wanted`; with no match (or no version to match, or exes
+    /// without version info) the first candidate, in the order they were found.
+    pub(super) fn pick_candidate(
+        candidates: Vec<PathBuf>,
+        wanted: Option<&version::Version>,
+        version_of: impl Fn(&std::path::Path) -> Option<version::Version>,
+    ) -> Option<PathBuf> {
+        let matching = wanted.and_then(|want| candidates.iter().find(|c| version_of(c).as_ref() == Some(want)));
+        matching.or_else(|| candidates.first()).cloned()
     }
 
     pub fn detect(app: &CraftApp) -> Option<Installed> {
         let m = msi_installs(app).into_iter().next()?;
-        Some(Installed {
-            version: m.version,
-            source: InstallSource::Msi,
-            location: m.exe.or_else(|| exe_in_any_scope(app)).map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
-            package: Some(m.product_code),
-        })
+        let location = m.exe.or_else(|| exe_in_any_scope(app, m.version.as_ref())).map_or_else(|| app.name.to_string(), |p| p.display().to_string());
+        Some(Installed { version: m.version, source: InstallSource::Msi, location, package: Some(m.product_code) })
     }
 }
 
@@ -917,6 +925,23 @@ mod tests {
         assert_eq!(windows::exe_in_folder(deck, &custom), None);
         std::fs::write(custom.join("deckcraft.exe"), "x").unwrap();
         assert_eq!(windows::exe_in_folder(deck, &custom), Some(custom.join("deckcraft.exe")));
+    }
+
+    /// With two copies in different scopes, the one that is the record's version is chosen, wherever it
+    /// was found; with no match, the first found.
+    #[cfg(windows)]
+    #[test]
+    fn the_copy_with_the_records_version_is_the_one_opened() {
+        let v = |s: &str| version::parse(s);
+        let old = PathBuf::from(r"D:\Old\deckcraft.exe");
+        let new = PathBuf::from(r"C:\Users\a\AppData\Local\Programs\ArtCraft\DeckCraft\deckcraft.exe");
+        let version_of = |p: &std::path::Path| if p == old { v("0.11.1") } else { v("0.12.0") };
+        let both = vec![old.clone(), new.clone()];
+        assert_eq!(windows::pick_candidate(both.clone(), v("0.12.0").as_ref(), version_of), Some(new.clone()));
+        assert_eq!(windows::pick_candidate(both.clone(), v("0.11.1").as_ref(), version_of), Some(old.clone()));
+        assert_eq!(windows::pick_candidate(both.clone(), v("0.99.0").as_ref(), version_of), Some(old.clone()));
+        assert_eq!(windows::pick_candidate(both, None, version_of), Some(old.clone()));
+        assert_eq!(windows::pick_candidate(Vec::new(), v("0.12.0").as_ref(), version_of), None);
     }
 
     #[test]
