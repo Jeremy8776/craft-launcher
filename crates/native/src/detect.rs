@@ -256,6 +256,17 @@ pub mod windows {
         crate::msi_context::single_scope(scopes)
     }
 
+    /// Whether `location` is the exe the record `product_code` resolves in its own scope. False for
+    /// a path that only the launch fallback (`exe_in_any_scope`) found, so an update never takes its
+    /// folder from another scope.
+    pub fn location_is_in_record_scope(app: &CraftApp, product_code: &str, location: &str) -> bool {
+        msi_installs(app)
+            .into_iter()
+            .find(|m| m.product_code == product_code)
+            .and_then(|m| m.exe)
+            .is_some_and(|exe| exe == std::path::Path::new(location))
+    }
+
     /// Every Windows Installer entry for `app`, newest first.
     pub fn msi_installs(app: &CraftApp) -> Vec<MsiInstall> {
         let mut out = Vec::new();

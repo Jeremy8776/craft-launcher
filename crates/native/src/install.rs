@@ -77,6 +77,8 @@ pub fn install_at(
     let _ = commit;
     #[allow(unused_variables)]
     let destination = destination(app, kind, existing, previous, job.install_locations)?;
+    #[cfg(windows)]
+    let destination = msi_update_folder(app, kind, existing, destination);
     if let Some(inst) = existing
         && inst.source.launcher_can_update()
         && process::is_running(Path::new(&inst.location))
@@ -231,6 +233,25 @@ pub fn occupied(
         _ => None,
     };
     Ok(target.filter(|t| std::fs::symlink_metadata(t).is_ok()))
+}
+
+/// An MSI update keeps the folder of the copy it replaces only when that copy was found in the
+/// record's own scope. A path found by the launch-only fallback, in another scope, is never passed
+/// to the installer: the update then keeps the record's context and the package's own folder.
+#[cfg(windows)]
+fn msi_update_folder(app: &CraftApp, kind: PackageKind, existing: Option<&Installed>, destination: Option<PathBuf>) -> Option<PathBuf> {
+    match existing {
+        Some(inst) if kind == PackageKind::Msi && inst.source == InstallSource::Msi => {
+            let in_scope = inst.package.as_deref().is_some_and(|code| crate::detect::windows::location_is_in_record_scope(app, code, &inst.location));
+            keep_if_in_scope(destination, in_scope)
+        }
+        _ => destination,
+    }
+}
+
+#[cfg(windows)]
+fn keep_if_in_scope(destination: Option<PathBuf>, in_scope: bool) -> Option<PathBuf> {
+    destination.filter(|_| in_scope)
 }
 
 /// The folder a new copy goes in: beside the launcher's copy it replaces, else the user's choice,
@@ -628,7 +649,7 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
         _ if cfg!(target_os = "macos") && path.extension().is_some_and(|e| e == "app") => process::open(path.as_os_str()),
         _ => {
             if !path.exists() {
-                if path.components().count() < 2 {
+                if cfg!(windows) && installed.source == InstallSource::Msi && path.components().count() < 2 {
                     return Err(format!(
                         "{} is registered with Windows, but the launcher can't find where it put the program. Reinstall it from here.",
                         app.name
@@ -1826,6 +1847,16 @@ pub mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder found only by the launch fallback, in another scope, never reaches the installer.
+    #[cfg(windows)]
+    #[test]
+    fn an_update_takes_the_folder_only_from_the_records_own_scope() {
+        let folder = Some(PathBuf::from(r"C:\Users\a\AppData\Local\Programs\ArtCraft\DeckCraft"));
+        assert_eq!(keep_if_in_scope(folder.clone(), true), folder);
+        assert_eq!(keep_if_in_scope(folder, false), None);
+        assert_eq!(keep_if_in_scope(None, true), None);
+    }
 
     #[cfg(unix)]
     #[test]
