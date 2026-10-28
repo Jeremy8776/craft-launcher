@@ -91,13 +91,13 @@ pub(crate) fn appimage_version(name: &str, stems: &[&str]) -> Option<Option<Stri
 /// Who our Windows Installer packages name as their publisher. A community app's names its own
 /// ([`CraftApp::msi_publisher`]).
 #[cfg_attr(not(windows), allow(dead_code))]
-const PUBLISHER: &str = artcraft_launcher_core::catalog::INSTALLER_PUBLISHER;
+const PUBLISHER: &str = "Learning Machines LLC";
 
 /// Whether an uninstall entry's `DisplayName` and `Publisher` are `app`'s, under any name its
-/// installers have registered.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn is_installer_entry(app: &CraftApp, display_name: &str, publisher: &str) -> bool {
-    app.is_installer_package(display_name, publisher)
+/// installers have registered. The updater service uses it on a downloaded installer's own
+/// `ProductName` and `Manufacturer`, so "this is CADCraft" means one thing in both places.
+pub fn is_installer_entry(app: &CraftApp, display_name: &str, publisher: &str) -> bool {
+    publisher == app.msi_publisher.unwrap_or(PUBLISHER) && app.names().any(|n| n == display_name)
 }
 
 /// Where a Windows install of `app` may keep its exe, in the order to try: the entry's

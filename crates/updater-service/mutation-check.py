@@ -60,7 +60,7 @@ MUTANTS = [
     ("install.rs", "let text = text.trim_end_matches('\\\\');", "let text = &*text;", "trailing backslash not trimmed"),
     ("wire.rs", "Err(Refusal::Declined(why)) => Reply::Declined { reason: why.clone() },", "", "decline not told apart from a refusal"),
     ("engine.rs", "        require_identity(request.app, &request.version, &inside)?;\n", "", "installer identity check skipped"),
-    ("package.rs", "if !app.is_installer_package(&info.product_name, &info.manufacturer) {", "if false {", "installer name and maker check removed"),
+    ("package.rs", "if !artcraft_launcher_native::detect::is_installer_entry(app, &info.product_name, &info.manufacturer) {", "if false {", "installer name and maker check removed"),
     ("package.rs", "if same == Ordering::Equal { Ok(()) }", "if true { Ok(()) }", "installer version check removed"),
     ("service.rs", "meta.file_type().is_symlink() || meta.file_attributes() & REPARSE_POINT != 0 || !meta.is_dir()", "false", "staging link check removed"),
 ]

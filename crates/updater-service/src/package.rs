@@ -62,11 +62,11 @@ impl Packages for MsiFiles {
 /// Whether `info` is the installer of `app` at `wanted`.
 ///
 /// The name and maker are compared the way the launcher recognises an installed copy of the app
-/// ([`CraftApp::is_installer_package`]), so "this is CADCraft" means one thing in both places. The
+/// ([`artcraft_launcher_native::detect::is_installer_entry`]), so "this is CADCraft" means one thing in both places. The
 /// version is compared on major, minor and patch only: a release tag can carry a pre-release tail
 /// (`1.2.3-rc.1`) that a Windows Installer product version cannot.
 pub fn require_identity(app: &CraftApp, wanted: &semver::Version, info: &PackageInfo) -> Result<(), Refusal> {
-    if !app.is_installer_package(&info.product_name, &info.manufacturer) {
+    if !artcraft_launcher_native::detect::is_installer_entry(app, &info.product_name, &info.manufacturer) {
         return Err(Refusal::WrongPackage);
     }
     let found = version::parse(&info.product_version).ok_or(Refusal::WrongPackage)?;

@@ -14,6 +14,10 @@ workspace = true
 artcraft-launcher-core = { workspace = true }
 # What goes over the pipe, shared with the launcher (the launcher cannot depend on this crate).
 artcraft-launcher-updater-client = { workspace = true }
+# The launcher's own detection and download code, so the service and the launcher agree on what
+# "installed" means (`detect::is_installer_entry`, also used on every platform by `package.rs`)
+# and there is one download path with one URL allowlist.
+artcraft-launcher-native = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }
@@ -26,9 +30,6 @@ dunce = "1"
 [target.'cfg(windows)'.dependencies]
 # Authenticode checks through WinTrust (already used by the launcher's native crate).
 verifysign = "1"
-# The launcher's own detection and download code, so the service and the launcher agree on what
-# "installed" means and there is one download path with one URL allowlist.
-artcraft-launcher-native = { workspace = true }
 # Reads Windows Installer's own record of who a product is installed for. Same version the
 # launcher's native crate already uses.
 winreg = "0.55"
