@@ -247,7 +247,7 @@ impl Http {
         }
         // A finished copy from an earlier attempt that never got installed. Marking it as just
         // used, before checking it, keeps `clean_downloads` away from it while it's installed.
-        if dest.is_file() && touch(dest) && matches_published(dest, sha256) {
+        if dest.is_file() && self.within_cap(dest) && touch(dest) && matches_published(dest, sha256) {
             progress(Transfer::Bytes { done: size, total: size });
             return Ok(());
         }
@@ -312,6 +312,10 @@ impl Http {
                 std::fs::remove_file(part).map_err(|e| format!("couldn't save the download ({e})"))?;
                 continue;
             }
+            if have > self.max_download {
+                std::fs::remove_file(part).map_err(|e| format!("couldn't save the download ({e})"))?;
+                continue;
+            }
             match self.attempt(url, part, have, size, stop, progress) {
                 Ok(()) => return Ok(()),
                 Err(AttemptError::Stopped(e)) => return Err(e),
@@ -322,6 +326,12 @@ impl Http {
                 }
             }
         }
+    }
+
+    /// Whether `file` is no bigger than this download may be. A copy left by an earlier download with a
+    /// looser cap must not be reused (or resumed) just because it is already on disk.
+    fn within_cap(&self, file: &Path) -> bool {
+        std::fs::metadata(file).is_ok_and(|m| m.len() <= self.max_download)
     }
 
     /// One request: appends to `part` from byte `have`.
@@ -397,6 +407,9 @@ impl Http {
             }
             let next_done = done.saturating_add(n as u64);
             if next_done > limit {
+                // What was saved can never become a valid file: do not leave up to `limit` bytes behind.
+                drop(file);
+                let _ = std::fs::remove_file(part);
                 return Err(AttemptError::Fatal(format!("the server sent more than the permitted size of {limit} bytes")));
             }
             let chunk = buf.get(..n).ok_or_else(|| AttemptError::Fatal("read past the buffer".into()))?;
@@ -720,6 +733,8 @@ pub(crate) mod tests {
         Corrupt,
         /// 404.
         Missing,
+        /// The whole body with no `Content-Length`; the end is the closed connection.
+        Unsized,
         /// The whole body, already a gzip stream, announced as `Content-Encoding: gzip`.
         Gzipped,
     }
@@ -755,6 +770,7 @@ pub(crate) mod tests {
                         .and_then(|()| stream.write_all(&body[..n])),
                     Reply::Corrupt => write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n")
                         .and_then(|()| stream.write_all(&vec![b'x'; len])),
+                    Reply::Unsized => write!(stream, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n").and_then(|()| stream.write_all(&body)),
                     Reply::Missing => write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
                     Reply::Gzipped => {
                         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n")
@@ -840,6 +856,37 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), body);
         assert_eq!(Http::new().unwrap().max_download, MAX_DOWNLOAD);
         assert_eq!(Http::new().unwrap().with_max_download(u64::MAX).max_download, MAX_DOWNLOAD);
+    }
+
+    #[test]
+    fn the_download_cap_also_covers_what_is_already_on_disk_and_what_overruns_it() {
+        let (body, sha) = body();
+        let cap = body.len() as u64 - 1;
+        let capped = Http::new().unwrap().with_max_download(cap);
+        let go = |dest: &std::path::Path, reply: Reply| {
+            let (url, _) = serve(body.clone(), vec![reply]);
+            capped.download(&url, dest, 0, &sha, &Stop::default(), &mut |_| {})
+        };
+
+        // A finished copy from a download with a looser cap is not handed back.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        std::fs::write(&dest, &body).unwrap();
+        assert!(go(&dest, Reply::Full).unwrap_err().contains("may be"));
+
+        // Neither is a leftover partial file that is already over the cap: it is discarded.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        let part = part_path(&dest, 0);
+        std::fs::write(&part, &body).unwrap();
+        assert!(go(&dest, Reply::Full).unwrap_err().contains("may be"));
+        assert!(!part.exists(), "an oversized partial file was kept");
+
+        // A body that never says its length is cut off at the cap, and what was saved is removed.
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        assert!(go(&dest, Reply::Unsized).unwrap_err().contains("more than"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "an overrun left a file behind");
     }
 
     #[test]
