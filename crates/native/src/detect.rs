@@ -256,15 +256,17 @@ pub mod windows {
         crate::msi_context::single_scope(scopes)
     }
 
+    /// How an exe path is stored in `Installed::location`. One function builds it for `detect` and for
+    /// the comparison below, so the two can never disagree on spelling.
+    fn location_text(exe: &std::path::Path) -> String {
+        exe.display().to_string()
+    }
+
     /// Whether `location` is the exe the record `product_code` resolves in its own scope. False for
     /// a path that only the launch fallback (`exe_in_any_scope`) found, so an update never takes its
     /// folder from another scope.
     pub fn location_is_in_record_scope(app: &CraftApp, product_code: &str, location: &str) -> bool {
-        msi_installs(app)
-            .into_iter()
-            .find(|m| m.product_code == product_code)
-            .and_then(|m| m.exe)
-            .is_some_and(|exe| exe == std::path::Path::new(location))
+        msi_installs(app).into_iter().find(|m| m.product_code == product_code).and_then(|m| m.exe).is_some_and(|exe| location_text(&exe) == location)
     }
 
     /// Every Windows Installer entry for `app`, newest first.
@@ -400,7 +402,7 @@ pub mod windows {
 
     pub fn detect(app: &CraftApp) -> Option<Installed> {
         let m = msi_installs(app).into_iter().next()?;
-        let location = m.exe.or_else(|| exe_in_any_scope(app, m.version.as_ref())).map_or_else(|| app.name.to_string(), |p| p.display().to_string());
+        let location = m.exe.or_else(|| exe_in_any_scope(app, m.version.as_ref())).map_or_else(|| app.name.to_string(), |p| location_text(&p));
         Some(Installed { version: m.version, source: InstallSource::Msi, location, package: Some(m.product_code) })
     }
 }
