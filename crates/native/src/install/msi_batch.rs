@@ -31,6 +31,11 @@ pub(super) const COMMAND: &str = "windows-installer-all-users";
 /// What PowerShell exits with when the permission prompt is declined (`ERROR_CANCELLED`).
 const DECLINED: i32 = 1223;
 
+/// What PowerShell exits with when the elevated session could not be started for any other
+/// reason. Bit 29 is the "customer" bit, which no Windows or Windows Installer error code sets,
+/// so it cannot be mistaken for an exit code from `msiexec`.
+const LAUNCH_FAILED: i32 = 0x2000_0001;
+
 /// Longest encoded script handed to PowerShell. The command line limit is 32,767 characters and
 /// the script travels twice (outer and elevated); thirteen apps need about a third of this.
 const MAX_ENCODED: usize = 12_000;
@@ -150,13 +155,25 @@ fn inner_script(program: &str, lines: &[String]) -> String {
 }
 
 /// What the launcher runs without elevation: it starts the elevated session (the one prompt) and
-/// waits for it. Declining the prompt makes PowerShell throw, which becomes [`DECLINED`].
+/// waits for it. Start-Process throws when the prompt is declined and when the session cannot
+/// start at all; [`launch_catch`] tells the two apart.
 fn outer_script(powershell: &str, encoded: &str) -> String {
     format!(
         "try {{ $elevated = Start-Process -FilePath {} -Verb RunAs -WindowStyle Hidden -Wait -PassThru \
          -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'; exit $elevated.ExitCode }} \
-         catch {{ exit {DECLINED} }}",
-        quoted(powershell)
+         catch {{ {} }}",
+        quoted(powershell),
+        launch_catch()
+    )
+}
+
+/// The `catch` body for a failed Start-Process: [`DECLINED`] when a Windows error "cancelled by the
+/// user" (1223) is anywhere in the exception chain, which is what a declined prompt throws, and
+/// [`LAUNCH_FAILED`] for anything else, so the launcher falls back instead of cancelling.
+fn launch_catch() -> String {
+    format!(
+        "$e = $_.Exception; while ($e) {{ if ($e -is [System.ComponentModel.Win32Exception] -and $e.NativeErrorCode -eq {DECLINED}) {{ exit {DECLINED} }}; \
+         $e = $e.InnerException }}; exit {LAUNCH_FAILED}"
     )
 }
 
@@ -265,6 +282,10 @@ pub(super) fn run(msiexec: &Path, targets: &[std::ffi::OsString]) -> Result<(), 
     command.args(["-NoProfile", "-NonInteractive", "-Command"]).arg(outer_script(text(&powershell)?, &script));
     log::info!("updating {} all-users apps under one permission prompt", lines.len());
     match command.status() {
+        Ok(status) if status.code() == Some(LAUNCH_FAILED) => {
+            log::warn!("couldn't start the elevated session; updating each app with its own prompt");
+            each_alone(msiexec, &lines)
+        }
         Ok(status) => outcome(status.code(), lines.len()),
         Err(e) => {
             log::warn!("couldn't start PowerShell ({e}); updating each app with its own prompt");

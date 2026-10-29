@@ -39,7 +39,7 @@ fn the_launcher_side_asks_once_and_reports_a_declined_prompt() {
     assert!(script.contains("-Verb RunAs") && script.contains("-Wait -PassThru"), "{script}");
     assert!(script.contains("'-NoProfile','-NonInteractive','-EncodedCommand','QQA='"), "{script}");
     assert!(script.contains("exit $elevated.ExitCode"));
-    assert!(script.ends_with("catch { exit 1223 }"), "{script}");
+    assert!(script.ends_with(&format!("catch {{ {} }}", launch_catch())), "{script}");
 }
 
 #[test]
@@ -299,13 +299,30 @@ mod powershell {
     }
 
     #[test]
-    fn the_outer_script_reports_a_decline_when_the_elevated_session_cannot_start() {
-        // A program that does not exist cannot be started with -Verb RunAs: the same `catch` that
-        // handles a declined prompt answers, and the launcher reads it as a cancel.
+    fn the_outer_script_reports_a_launch_failure_apart_from_a_decline() {
+        // A program that does not exist cannot be started: that is not the person saying no, so
+        // the launcher falls back to one prompt per app rather than cancelling every update.
         let root = std::env::var_os("SystemRoot").unwrap();
         let powershell = Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         let script = outer_script(r"C:\definitely\not\here.exe", "QQA=");
         let status = std::process::Command::new(powershell).args(["-NoProfile", "-NonInteractive", "-Command", &script]).status().unwrap();
-        assert_eq!(status.code(), Some(1223));
+        assert_eq!(status.code(), Some(LAUNCH_FAILED));
+    }
+
+    #[test]
+    fn a_declined_prompt_is_still_a_cancel() {
+        // Declining the prompt makes Start-Process throw with the Windows error "cancelled by the
+        // user" (1223) inside. The prompt needs a person, so throw that same exception instead.
+        let root = std::env::var_os("SystemRoot").unwrap();
+        let powershell = Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let run = |native: i32| {
+            let script = format!(
+                "try {{ throw (New-Object System.InvalidOperationException 'x', (New-Object System.ComponentModel.Win32Exception {native})) }} catch {{ {} }}",
+                launch_catch()
+            );
+            std::process::Command::new(&powershell).args(["-NoProfile", "-NonInteractive", "-Command", &script]).status().unwrap().code()
+        };
+        assert_eq!(run(1223), Some(DECLINED));
+        assert_eq!(run(2), Some(LAUNCH_FAILED));
     }
 }
