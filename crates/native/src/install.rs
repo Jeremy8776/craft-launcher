@@ -287,6 +287,32 @@ fn destination(
     Ok(Some(if kind == PackageKind::Msi { parent.join(app.name) } else { parent }))
 }
 
+/// The folder a new install goes inside when the person hasn't chosen one, so the UI can show
+/// that folder instead of only saying "System default": a Windows MSI installs for everyone
+/// into `Program Files\ArtCraft\<App>`, a portable ZIP unpacks into the launcher's own `apps`
+/// folder, and a macOS app goes into `/Applications`. Formats the system itself manages (the
+/// distro's packages on Linux, Flatpak) have no single folder, so they answer `None`.
+pub fn default_folder(kind: PackageKind, paths: &Paths) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        match kind {
+            PackageKind::Msi => std::env::var_os("ProgramFiles").map(|folder| PathBuf::from(folder).join("ArtCraft")),
+            PackageKind::PortableZip => Some(paths.apps()),
+            _ => None,
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = paths;
+        (kind == PackageKind::Dmg).then(|| PathBuf::from("/Applications"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (kind, paths);
+        None
+    }
+}
+
 fn selected_folder(folder: &str, writable: bool) -> Result<PathBuf, String> {
     let path = if folder == "~" {
         dirs::home_dir().ok_or("no home folder")?
@@ -1881,6 +1907,33 @@ mod tests {
         assert_eq!(keep_if_in_scope(folder.clone(), true), folder);
         assert_eq!(keep_if_in_scope(folder, false), None);
         assert_eq!(keep_if_in_scope(None, true), None);
+    }
+
+    /// The default folder shown in the UI is the one a fresh install really uses.
+    #[cfg(windows)]
+    #[test]
+    fn the_default_folder_is_the_artcraft_suite_folder_in_program_files() {
+        let paths = Paths::under(std::path::Path::new(r"C:\scratch"));
+        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap();
+        assert_eq!(default_folder(PackageKind::Msi, &paths), Some(program_files.join("ArtCraft")));
+        assert_eq!(default_folder(PackageKind::PortableZip, &paths), Some(paths.apps()));
+        assert_eq!(default_folder(PackageKind::Dmg, &paths), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_default_folder_is_applications() {
+        let paths = Paths::under(std::path::Path::new("/tmp/scratch"));
+        assert_eq!(default_folder(PackageKind::Dmg, &paths), Some(PathBuf::from("/Applications")));
+        assert_eq!(default_folder(PackageKind::Msi, &paths), None);
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn formats_the_system_manages_have_no_single_default_folder() {
+        let paths = Paths::under(std::path::Path::new("/tmp/scratch"));
+        assert_eq!(default_folder(PackageKind::Deb, &paths), None);
+        assert_eq!(default_folder(PackageKind::AppImage, &paths), None);
     }
 
     #[cfg(unix)]

@@ -527,6 +527,11 @@ impl Host for DesktopHost {
         dialog.pick_folder().and_then(|p| p.to_str().map(str::to_string))
     }
 
+    fn default_install_folder(&mut self, kind: artcraft_launcher_core::PackageKind) -> Option<String> {
+        let paths = artcraft_launcher_native::paths::Paths::new().ok()?;
+        artcraft_launcher_native::install::default_folder(kind, &paths).and_then(|folder| folder.to_str().map(str::to_string))
+    }
+
     fn reduce_motion(&self) -> bool {
         motion::reduced()
     }

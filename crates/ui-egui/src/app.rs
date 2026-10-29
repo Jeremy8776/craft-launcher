@@ -7,7 +7,7 @@ use artcraft_launcher_core::protocol::{
 };
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::status::AppStatus;
-use artcraft_launcher_core::{Platform, SUITE};
+use artcraft_launcher_core::{PackageKind, Platform, SUITE};
 
 use crate::i18n::set_current;
 use crate::model::AppEntry;
@@ -59,6 +59,12 @@ pub trait Host {
         false
     }
     fn pick_folder(&mut self, _initial: Option<&str>) -> Option<String> {
+        None
+    }
+    /// The folder a new install of this format goes inside when the person hasn't chosen one, so
+    /// the install-folder field can show that folder instead of only saying "System default".
+    /// `None` when this host has no single answer (the web build; formats the system manages).
+    fn default_install_folder(&mut self, _kind: PackageKind) -> Option<String> {
         None
     }
     /// The URL to open when Discord is clicked. Defaults to the web link.
@@ -433,6 +439,20 @@ impl LauncherUi {
                 matches!(p.os, artcraft_launcher_core::Os::Windows | artcraft_launcher_core::Os::MacOs | artcraft_launcher_core::Os::Linux)
             })
             && !crate::settings::is_flatpak_sandbox()
+    }
+
+    /// The format a new install would use, mirroring the Settings chooser: the saved preference
+    /// when the platform offers it, else the platform's normal format. The release picked at
+    /// install time can still differ; this only chooses which default folder to show.
+    pub(crate) fn fresh_install_kind(&self) -> PackageKind {
+        let preferred = self.settings.preferred_kinds.first().copied();
+        match self.platform.as_ref().map(|p| p.os) {
+            Some(artcraft_launcher_core::Os::Windows) => {
+                preferred.filter(|kind| matches!(kind, PackageKind::Msi | PackageKind::PortableZip)).unwrap_or(PackageKind::Msi)
+            }
+            Some(artcraft_launcher_core::Os::MacOs) => preferred.filter(|kind| *kind == PackageKind::Dmg).unwrap_or(PackageKind::Dmg),
+            _ => preferred.unwrap_or(PackageKind::AppImage),
+        }
     }
 
     /// Asks to install `id`. On a host that supports custom folders and for an app that is not
