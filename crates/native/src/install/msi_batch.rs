@@ -160,6 +160,57 @@ fn outer_script(powershell: &str, encoded: &str) -> String {
     )
 }
 
+/// A checked all-users package, kept exactly as checked until its batch ends.
+///
+/// The download is checked against its release checksum before it is renamed into the download
+/// folder, but the batch runs it later, elevated, from that user-writable folder. The prompt for
+/// the batch names PowerShell, not the package's publisher, so a file swapped in between would go
+/// unnoticed (CWE-367). Holding the file open while sharing only reading stops anyone changing,
+/// moving or deleting it; hashing it again through that handle proves the held bytes are the
+/// checked ones. `msiexec` can still open it to read.
+#[cfg(windows)]
+pub(super) struct Held {
+    _file: std::fs::File,
+}
+
+/// Opens `msi` so that it cannot be changed, moved or deleted while held, and checks that it still
+/// has the `sha256` it was downloaded against.
+#[cfg(windows)]
+pub(super) fn hold(msi: &Path, sha256: &str) -> Result<Held, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    use sha2::{Digest, Sha256};
+
+    /// Others may read the file, but not write, rename or delete it.
+    const FILE_SHARE_READ: u32 = 0x1;
+    let mut file = std::fs::File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(msi)
+        .map_err(|e| format!("couldn't keep the checked package {} safe until it is installed ({e})", msi.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("couldn't read {} ({e})", msi.display()))?;
+    let digest: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    if !digest.eq_ignore_ascii_case(sha256.trim()) {
+        return Err(format!("{} changed after it was checked, so it wasn't installed. Try again.", msi.display()));
+    }
+    Ok(Held { _file: file })
+}
+
+/// How a batch runs: under one prompt, or (when its script is too long for one command line)
+/// each package with its own prompt, as the single-app route does.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+enum Plan {
+    /// The encoded script for the elevated session.
+    Elevated(String),
+    EachAlone,
+}
+
+fn plan(msiexec: &str, lines: &[String]) -> Plan {
+    let script = encoded(&inner_script(msiexec, lines));
+    if script.len() > MAX_ENCODED { Plan::EachAlone } else { Plan::Elevated(script) }
+}
+
 /// The base64 form of `script` that `-EncodedCommand` takes: UTF-16 little-endian, so no quoting
 /// can go wrong however odd a path is.
 fn encoded(script: &str) -> String {
@@ -203,10 +254,13 @@ pub(super) fn run(msiexec: &Path, targets: &[std::ffi::OsString]) -> Result<(), 
     let root =
         std::env::var_os("SystemRoot").map(PathBuf::from).filter(|root| root.is_absolute()).ok_or("SystemRoot is not set to an absolute path")?;
     let powershell = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
-    let script = encoded(&inner_script(text(msiexec)?, &lines));
-    if script.len() > MAX_ENCODED {
-        return Err(format!("too many apps to update in one go ({}). Try them one at a time.", lines.len()));
-    }
+    let script = match plan(text(msiexec)?, &lines) {
+        Plan::Elevated(script) => script,
+        Plan::EachAlone => {
+            log::warn!("{} all-users updates are too many for one permission prompt; updating each with its own", lines.len());
+            return each_alone(msiexec, &lines);
+        }
+    };
     let mut command = crate::process::command(&powershell);
     command.args(["-NoProfile", "-NonInteractive", "-Command"]).arg(outer_script(text(&powershell)?, &script));
     log::info!("updating {} all-users apps under one permission prompt", lines.len());

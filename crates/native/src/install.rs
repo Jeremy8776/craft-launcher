@@ -116,7 +116,9 @@ pub fn install_at(
     if msi_scope != Some(MsiScope::PerMachine) {
         joined = None;
     }
-    let file = download(release, asset, job)?;
+    // The checksum is kept for the Windows all-users route, which checks the held package again.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    let (file, sha256) = download(release, asset, job)?;
     log::info!("{}: download ready ({}), running installer...", app.name, file.display());
     // Past this point the install can't be interrupted halfway.
     (job.phase)(JobPhase::Installing);
@@ -135,7 +137,7 @@ pub fn install_at(
             // fresh install passes no context and takes the package's own default.
             match &joined {
                 // All-users updates that are ready together share one permission prompt.
-                Some(joined) => windows::run_msi_all_users(&file, destination.as_deref(), joined, job.stop, &mut *job.phase),
+                Some(joined) => windows::run_msi_all_users(&file, &sha256, destination.as_deref(), joined, job.stop, &mut *job.phase),
                 None => windows::run_msi(&file, destination.as_deref(), msi_scope, job.stop, &mut *job.phase),
             }
             .map(|_| None)
@@ -516,7 +518,8 @@ pub fn available_kinds() -> Vec<PackageKind> {
 /// Fetches `asset` into the download folder, checked against its published SHA-256: the feed's
 /// or GitHub's per-file digest, else the release's `SHA256SUMS.txt`. A release with neither is
 /// refused before anything is fetched: a file nothing vouches for is never installed (#90).
-pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<PathBuf, String> {
+/// Returns the file and the checksum it was checked against.
+pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<(PathBuf, String), String> {
     if !release::valid_file_name(&asset.name) {
         return Err("the release has an unexpected file name".into());
     }
@@ -537,7 +540,7 @@ pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> R
         Transfer::Reconnecting { done, total } => phase(JobPhase::Reconnecting { done, total }),
     })?;
     (job.phase)(JobPhase::Verifying);
-    Ok(dest)
+    Ok((dest, sha))
 }
 
 /// The file's line in the release's `SHA256SUMS.txt`. `Ok(None)` only when the release really
@@ -1917,13 +1920,17 @@ pub mod windows {
 
     /// Updates an app installed for all users. Jobs that are ready together go into one call, so Windows
     /// asks for permission once for all of them; one that is alone runs as [`run_msi`] does.
+    /// `sha256` is the checksum the download was checked against: the package is held unchangeable
+    /// and checked again before it waits, and stays held until its call ends.
     pub(super) fn run_msi_all_users(
         msi: &Path,
+        sha256: &str,
         destination: Option<&Path>,
         joined: &msi_batch::Joined<'_>,
         stop: &Stop,
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
+        let _held = msi_batch::hold(msi, sha256)?;
         let scope = Some(MsiScope::PerMachine);
         run_all_users_with(msi, destination, joined, stop, phase, &|| run_direct(msi, destination, scope), &|targets| {
             msi_batch::run(&msiexec(), targets)

@@ -108,6 +108,56 @@ fn a_job_counts_as_preparing_until_it_arrives_or_leaves() {
     assert_eq!(gather.preparing(), 0);
 }
 
+/// The checked package stays exactly as checked until its batch ends (CWE-367): the elevated
+/// session's prompt names PowerShell, not the package's publisher, so a swapped file would go
+/// unnoticed.
+#[cfg(windows)]
+mod holding {
+    use super::*;
+
+    fn package(dir: &Path) -> (std::path::PathBuf, String) {
+        let msi = dir.join("app.msi");
+        std::fs::write(&msi, b"the checked package").unwrap();
+        let sha = crate::http::sha256_file(&msi).unwrap();
+        (msi, sha)
+    }
+
+    #[test]
+    fn a_held_package_cannot_be_changed_moved_or_deleted_but_can_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (msi, sha) = package(dir.path());
+        let held = hold(&msi, &sha.to_uppercase()).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).open(&msi).is_err(), "written while held");
+        assert!(std::fs::rename(&msi, dir.path().join("moved.msi")).is_err(), "moved while held");
+        assert!(std::fs::remove_file(&msi).is_err(), "deleted while held");
+        // msiexec opens the package to read it, sharing only reading.
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            assert!(std::fs::File::options().read(true).share_mode(0x1).open(&msi).is_ok(), "msiexec could not read it");
+        }
+        drop(held);
+        assert!(std::fs::rename(&msi, dir.path().join("moved.msi")).is_ok());
+    }
+
+    #[test]
+    fn a_package_that_changed_after_its_check_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (msi, sha) = package(dir.path());
+        std::fs::write(&msi, b"something else").unwrap();
+        let error = hold(&msi, &sha).err().unwrap();
+        assert!(error.contains("changed after it was checked"), "{error}");
+    }
+}
+
+#[test]
+fn a_batch_too_long_for_one_command_line_falls_back_to_one_prompt_each() {
+    let short = vec!["/i \"C:\\a.msi\"".to_string()];
+    assert!(matches!(plan("C:\\Windows\\System32\\msiexec.exe", &short), Plan::Elevated(_)));
+    let long: Vec<String> =
+        (0..200).map(|i| format!("/i \"C:\\Users\\someone\\AppData\\Local\\ArtCraft Launcher\\downloads\\app{i}.msi\"")).collect();
+    assert!(matches!(plan("C:\\Windows\\System32\\msiexec.exe", &long), Plan::EachAlone));
+}
+
 /// The real queue and counter, with the installers replaced by recorders: what "Update all" does with
 /// several all-users updates, and with one.
 #[cfg(windows)]
