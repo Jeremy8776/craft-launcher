@@ -532,10 +532,10 @@ fn run_install(
             format!("{} {} has no download for {}", app.name, release.version_label(), platform.label())
         }
     })?;
-    // Going back to a version chosen by name. A macOS bundle keeps the old copy aside until the
-    // new one is in place. Otherwise the installed version's own package is found first, so a
-    // downgrade that fails can put it back. Without it nothing changes.
-    let keeps_old_copy = install::keeps_old_copy(kind, existing);
+    // Going back to a version chosen by name. A macOS bundle or a launcher AppImage keeps the old
+    // copy until the new one is in place. Otherwise the installed version's own package is found
+    // first, so a downgrade that fails can put it back. Without it nothing changes.
+    let keeps_old_copy = install::keeps_old_copy(kind, existing, record);
     let previous = if keeps_old_copy {
         None
     } else {

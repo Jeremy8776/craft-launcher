@@ -52,23 +52,30 @@ pub enum Downgrade<'a> {
     /// The installed version's own release and package, downloaded and checked before a downgrade
     /// changes anything, so a failed Windows Installer downgrade can put it back.
     Reinstall { previous: &'a Release, asset: &'a Asset },
-    /// The installed copy is moved aside, not removed, until the older one is in place, and moved
-    /// back if that fails (see [`keeps_old_copy`]). No older package is needed.
+    /// The installed copy stays until the older one is in place (see [`keeps_old_copy`]). No
+    /// older package is needed.
     KeepOldCopy,
 }
 
-/// Whether going back over `existing` keeps the old copy aside until the new one is in place: a
-/// macOS bundle the launcher replaces itself, the same way it updates one.
-pub fn keeps_old_copy(kind: PackageKind, existing: Option<&Installed>) -> bool {
-    kind == PackageKind::Dmg && existing.is_some_and(|inst| inst.source == InstallSource::MacApp)
+/// Whether going back over `existing` keeps the old copy until the new one is in place, the same
+/// way an update does. A macOS bundle is moved aside and moved back if the swap fails. An
+/// AppImage the launcher installed (`previous` records it) is renamed in whole, and the old file
+/// is removed only after that. A tarball is left out: its `bin` and `share` swap one at a time.
+pub fn keeps_old_copy(kind: PackageKind, existing: Option<&Installed>, previous: Option<&Record>) -> bool {
+    let source = existing.map(|inst| inst.source);
+    match kind {
+        PackageKind::Dmg => source == Some(InstallSource::MacApp),
+        PackageKind::AppImage => source == Some(InstallSource::Launcher) && previous.is_some_and(|r| r.kind == PackageKind::AppImage),
+        _ => false,
+    }
 }
 
 /// Whether `downgrade` has a way back for this kind of install.
-fn downgrade_is_safe(downgrade: Option<Downgrade<'_>>, kind: PackageKind, existing: Option<&Installed>) -> bool {
+fn downgrade_is_safe(downgrade: Option<Downgrade<'_>>, kind: PackageKind, existing: Option<&Installed>, previous: Option<&Record>) -> bool {
     match downgrade {
         None => true,
         Some(Downgrade::Reinstall { .. }) => kind == PackageKind::Msi && existing.is_some_and(|inst| inst.source == InstallSource::Msi),
-        Some(Downgrade::KeepOldCopy) => keeps_old_copy(kind, existing),
+        Some(Downgrade::KeepOldCopy) => keeps_old_copy(kind, existing, previous),
     }
 }
 
@@ -125,7 +132,7 @@ pub fn install_at(
     {
         return Err(format!("Cannot update {} to {}: installed version {} is newer", app.name, release.version_label(), inst_v));
     }
-    if !downgrade_is_safe(job.downgrade, kind, existing) {
+    if !downgrade_is_safe(job.downgrade, kind, existing, previous) {
         return Err(format!("Going back to an older version of {} isn't available for this kind of install yet.", app.name));
     }
     log::info!("{}: starting {} to {} ({})", app.name, if existing.is_some() { "update" } else { "install" }, release.version_label(), kind.label());
@@ -2573,63 +2580,100 @@ mod tests {
         let (release, asset) = (Release::default(), Asset::default());
         let reinstall = Some(Downgrade::Reinstall { previous: &release, asset: &asset });
         let keep = Some(Downgrade::KeepOldCopy);
-        // Only a macOS bundle over a Mac app keeps its old copy aside.
-        assert!(keeps_old_copy(PackageKind::Dmg, Some(&mac)));
-        assert!(!keeps_old_copy(PackageKind::Dmg, Some(&portable)));
-        assert!(!keeps_old_copy(PackageKind::Dmg, None));
-        assert!(!keeps_old_copy(PackageKind::Msi, Some(&mac)));
+        let record = |kind| Record { version: "0.5.0".into(), kind, path: PathBuf::new(), installed_at: 0, files: Vec::new(), needs_root: false };
+        let (appimage, tarball) = (record(PackageKind::AppImage), record(PackageKind::TarGz));
+        // A macOS bundle over a Mac app, or an AppImage over one the launcher installed, keeps its
+        // old copy until the new one is in place.
+        assert!(keeps_old_copy(PackageKind::Dmg, Some(&mac), None));
+        assert!(keeps_old_copy(PackageKind::AppImage, Some(&portable), Some(&appimage)));
+        assert!(!keeps_old_copy(PackageKind::Dmg, Some(&portable), None));
+        assert!(!keeps_old_copy(PackageKind::Dmg, None, None));
+        assert!(!keeps_old_copy(PackageKind::Msi, Some(&mac), None));
+        // An AppImage the launcher didn't record, a user's own AppImage, and a tarball don't.
+        assert!(!keeps_old_copy(PackageKind::AppImage, Some(&portable), None));
+        assert!(!keeps_old_copy(PackageKind::AppImage, Some(&installed(InstallSource::AppImage)), Some(&appimage)));
+        assert!(!keeps_old_copy(PackageKind::AppImage, Some(&portable), Some(&tarball)));
+        assert!(!keeps_old_copy(PackageKind::TarGz, Some(&portable), Some(&tarball)));
         // Each way back fits one kind of install; anything else is refused.
-        assert!(downgrade_is_safe(None, PackageKind::AppImage, Some(&portable)));
-        assert!(downgrade_is_safe(keep, PackageKind::Dmg, Some(&mac)));
-        assert!(downgrade_is_safe(reinstall, PackageKind::Msi, Some(&msi)));
-        assert!(!downgrade_is_safe(keep, PackageKind::Msi, Some(&msi)));
-        assert!(!downgrade_is_safe(keep, PackageKind::Dmg, Some(&portable)));
-        assert!(!downgrade_is_safe(keep, PackageKind::AppImage, Some(&portable)));
-        assert!(!downgrade_is_safe(reinstall, PackageKind::Dmg, Some(&mac)));
+        assert!(downgrade_is_safe(None, PackageKind::AppImage, Some(&portable), None));
+        assert!(downgrade_is_safe(keep, PackageKind::Dmg, Some(&mac), None));
+        assert!(downgrade_is_safe(keep, PackageKind::AppImage, Some(&portable), Some(&appimage)));
+        assert!(downgrade_is_safe(reinstall, PackageKind::Msi, Some(&msi), None));
+        assert!(!downgrade_is_safe(keep, PackageKind::Msi, Some(&msi), None));
+        assert!(!downgrade_is_safe(keep, PackageKind::Dmg, Some(&portable), None));
+        assert!(!downgrade_is_safe(keep, PackageKind::AppImage, Some(&portable), None));
+        assert!(!downgrade_is_safe(reinstall, PackageKind::Dmg, Some(&mac), None));
+        assert!(!downgrade_is_safe(reinstall, PackageKind::AppImage, Some(&portable), Some(&appimage)));
     }
 
-    /// Going back over a Mac app passes the "installed version is newer" guard and installs the
-    /// older bundle the way an update does, with no older package fetched first.
-    #[cfg(not(target_os = "macos"))]
+    /// Going back over a Mac app or a launcher AppImage passes the "installed version is newer"
+    /// guard and installs the older copy the way an update does, with no older package fetched
+    /// first. Each case runs where its package can't really install, so it stops at that step.
     #[test]
-    fn a_mac_downgrade_goes_ahead_without_a_package_to_put_back() {
+    fn a_downgrade_that_keeps_the_old_copy_goes_ahead_without_a_package_to_put_back() {
         use crate::http::tests::{Reply, body, serve};
         let app = CraftApp::by_id("wordcraft").unwrap();
-        let (body, sha) = body();
-        let (url, requests) = serve(body.clone(), vec![Reply::Full]);
-        let asset = Asset { name: "wordcraft-0.3.0-macos-universal.dmg".into(), size: body.len() as u64, url, sha256: Some(sha) };
-        let release = Release { tag: "v0.3.0".into(), version: version::parse("0.3.0"), assets: vec![asset.clone()], ..Release::default() };
         let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::under(dir.path());
-        let http = Http::new().unwrap();
-        let installed = Installed {
-            version: version::parse("0.4.0"),
-            source: InstallSource::MacApp,
-            location: dir.path().join("WordCraft.app").display().to_string(),
-            package: None,
+        let old_appimage = dir.path().join("wordcraft-0.4.0-linux-x86_64.AppImage");
+        let record = Record {
+            version: "0.4.0".into(),
+            kind: PackageKind::AppImage,
+            path: old_appimage.clone(),
+            installed_at: 0,
+            files: Vec::new(),
+            needs_root: false,
         };
-        let run = |downgrade| {
-            let mut phases = Vec::new();
-            let mut phase = |p: JobPhase| phases.push(p);
-            let mut job = Job {
-                http: &http,
-                paths: &paths,
-                stop: &Stop::default(),
-                phase: &mut phase,
-                install_locations: &InstallLocations::default(),
-                replace: false,
-                downgrade,
+        let cases = [
+            (
+                PackageKind::Dmg,
+                "wordcraft-0.3.0-macos-universal.dmg",
+                InstallSource::MacApp,
+                dir.path().join("WordCraft.app"),
+                None,
+                cfg!(target_os = "macos"),
+            ),
+            (
+                PackageKind::AppImage,
+                "wordcraft-0.3.0-linux-x86_64.AppImage",
+                InstallSource::Launcher,
+                old_appimage,
+                Some(&record),
+                cfg!(target_os = "linux"),
+            ),
+        ];
+        for (kind, name, source, location, previous, installs_here) in cases {
+            if installs_here {
+                continue;
+            }
+            let (body, sha) = body();
+            let (url, requests) = serve(body.clone(), vec![Reply::Full]);
+            let asset = Asset { name: name.into(), size: body.len() as u64, url, sha256: Some(sha) };
+            let release = Release { tag: "v0.3.0".into(), version: version::parse("0.3.0"), assets: vec![asset.clone()], ..Release::default() };
+            let paths = Paths::under(&dir.path().join(name));
+            let http = Http::new().unwrap();
+            let installed = Installed { version: version::parse("0.4.0"), source, location: location.display().to_string(), package: None };
+            let run = |downgrade| {
+                let mut phase = |_: JobPhase| {};
+                let mut job = Job {
+                    http: &http,
+                    paths: &paths,
+                    stop: &Stop::default(),
+                    phase: &mut phase,
+                    install_locations: &InstallLocations::default(),
+                    replace: false,
+                    downgrade,
+                };
+                install(app, &release, &asset, kind, Some(&installed), previous, &mut job).unwrap_err()
             };
-            install(app, &release, &asset, PackageKind::Dmg, Some(&installed), None, &mut job).unwrap_err()
-        };
-        // Not chosen by name: still refused as older than the installed copy.
-        let refused = run(None);
-        assert!(refused.contains("installed version 0.4.0 is newer"), "{refused}");
-        assert!(requests.lock().unwrap().is_empty(), "nothing was downloaded");
-        // Chosen by name: only the chosen version is downloaded, then this system can't open a DMG.
-        let error = run(Some(Downgrade::KeepOldCopy));
-        assert!(error.contains("isn't supported"), "{error}");
-        assert_eq!(requests.lock().unwrap().len(), 1, "one package, the chosen one");
+            // Not chosen by name: still refused as older than the installed copy.
+            let refused = run(None);
+            assert!(refused.contains("installed version 0.4.0 is newer"), "{name}: {refused}");
+            assert!(requests.lock().unwrap().is_empty(), "{name}: nothing was downloaded");
+            // Chosen by name: only the chosen version is downloaded, then this system can't install it.
+            let error = run(Some(Downgrade::KeepOldCopy));
+            assert!(error.contains("isn't supported"), "{name}: {error}");
+            assert_eq!(requests.lock().unwrap().len(), 1, "{name}: one package, the chosen one");
+        }
     }
 
     #[test]
