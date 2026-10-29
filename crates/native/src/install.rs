@@ -95,6 +95,10 @@ pub fn install_at(
         return Err(format!("Cannot update {} to {}: installed version {} is newer", app.name, release.version_label(), inst_v));
     }
     log::info!("{}: starting {} to {} ({})", app.name, if existing.is_some() { "update" } else { "install" }, release.version_label(), kind.label());
+    // An update of an installed MSI may be an all-users one. Say so before the (slow) scope lookup, so
+    // the other updates of this "Update all" wait for it and share one permission prompt.
+    #[cfg(windows)]
+    let mut joined = (kind == PackageKind::Msi && existing.is_some_and(|inst| inst.source == InstallSource::Msi)).then(msi_batch::Joined::join);
     #[cfg(windows)]
     let msi_scope = if kind == PackageKind::Msi {
         let updated = crate::msi_context::update_scope(
@@ -108,6 +112,10 @@ pub fn install_at(
     } else {
         None
     };
+    #[cfg(windows)]
+    if msi_scope != Some(MsiScope::PerMachine) {
+        joined = None;
+    }
     let file = download(release, asset, job)?;
     log::info!("{}: download ready ({}), running installer...", app.name, file.display());
     // Past this point the install can't be interrupted halfway.
@@ -125,7 +133,12 @@ pub fn install_at(
             // An update lands in the same Windows Installer context as the copy being replaced:
             // per-machine needs elevation, per-user must not duplicate itself per-machine. A
             // fresh install passes no context and takes the package's own default.
-            windows::run_msi(&file, destination.as_deref(), msi_scope, job.stop, &mut *job.phase).map(|_| None)
+            match &joined {
+                // All-users updates that are ready together share one permission prompt.
+                Some(joined) => windows::run_msi_all_users(&file, destination.as_deref(), joined, job.stop, &mut *job.phase),
+                None => windows::run_msi(&file, destination.as_deref(), msi_scope, job.stop, &mut *job.phase),
+            }
+            .map(|_| None)
         }
         #[cfg(windows)]
         PackageKind::PortableZip => {
@@ -878,14 +891,15 @@ fn root_outcome(code: Option<i32>) -> Result<(), String> {
     }
 }
 
-/// How the error of an installer call shared by several apps ends (see `linux::shared_outcome`).
+/// How the error of an installer call shared by several apps ends (see `linux::shared_outcome` and
+/// `msi_batch::outcome`).
 const SHARED_CALL: &str = "apps together. Try them one at a time.";
 
 /// Whether an install failed in one installer call shared with other apps (Linux packages
-/// installed together). Such a call can fail after it has installed some of its apps; any other
-/// failure is the app's own.
+/// installed together, or Windows all-users updates under one permission prompt). Such a call can
+/// fail after it has installed some of its apps; any other failure is the app's own.
 pub fn failed_in_shared_call(error: &str) -> bool {
-    cfg!(target_os = "linux") && error.ends_with(SHARED_CALL)
+    cfg!(any(target_os = "linux", windows)) && error.ends_with(SHARED_CALL)
 }
 
 /// The system's installer runs one job at a time; the others wait their turn here.
@@ -1810,6 +1824,23 @@ mod freebsd {
     }
 }
 
+/// What a Windows Installer exit code means for the job that ran it.
+#[cfg(any(windows, test))]
+fn explain(code: Option<i32>) -> Result<(), String> {
+    match code {
+        Some(0 | 3010 | 1641) => Ok(()),
+        Some(1602) => Err("cancelled".into()),
+        Some(1618) => Err("another installation is in progress. Wait for it to finish, then try again.".into()),
+        Some(1925 | 1303) => Err("Windows didn't allow the install (administrator permission is needed)".into()),
+        Some(c) => Err(format!("the Windows Installer stopped with error {c}")),
+        None => Err("the Windows Installer was interrupted".into()),
+    }
+}
+
+/// One permission prompt for several all-users updates.
+#[cfg(any(windows, test))]
+mod msi_batch;
+
 /// Builds the Windows Installer command separately so its package argument can be checked
 /// without starting an installer.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1845,23 +1876,12 @@ pub mod windows {
     use artcraft_launcher_core::protocol::CANCELLED;
 
     use super::{
-        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, msi_command, msi_folder_argument, msi_log, msi_scope_arguments,
-        process, turn,
+        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, explain, msi_batch, msi_command, msi_folder_argument, msi_log,
+        msi_scope_arguments, process, turn,
     };
 
     fn msiexec() -> PathBuf {
         std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join(r"System32\msiexec.exe")
-    }
-
-    fn explain(code: Option<i32>) -> Result<(), String> {
-        match code {
-            Some(0 | 3010 | 1641) => Ok(()),
-            Some(1602) => Err("cancelled".into()),
-            Some(1618) => Err("another installation is in progress. Wait for it to finish, then try again.".into()),
-            Some(1925 | 1303) => Err("Windows didn't allow the install (administrator permission is needed)".into()),
-            Some(c) => Err(format!("the Windows Installer stopped with error {c}")),
-            None => Err("the Windows Installer was interrupted".into()),
-        }
     }
 
     /// Runs an MSI with a progress window and no restart. Windows asks for permission itself.
@@ -1874,21 +1894,68 @@ pub mod windows {
         stop: &Stop,
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
-        in_turn(stop, phase, JobPhase::Installing, || {
-            use std::os::windows::process::CommandExt;
-            let mut command = msi_command(&msiexec(), msi)?;
-            if let Some(dir) = destination {
-                command.raw_arg(msi_folder_argument(dir)?);
-            }
-            for argument in msi_scope_arguments(scope) {
-                command.raw_arg(argument);
-            }
-            let status = command.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
-            explain(status.code()).map_err(|e| match status.code() {
-                Some(1602) | None => e,
-                _ => format!("{e}. Its log is at {}", msi_log(msi).display()),
-            })
+        in_turn(stop, phase, JobPhase::Installing, || run_direct(msi, destination, scope))
+    }
+
+    /// Runs one MSI by itself: `msiexec` asks for permission itself, and the prompt names the package's
+    /// publisher.
+    fn run_direct(msi: &Path, destination: Option<&Path>, scope: Option<MsiScope>) -> Result<(), String> {
+        use std::os::windows::process::CommandExt;
+        let mut command = msi_command(&msiexec(), msi)?;
+        if let Some(dir) = destination {
+            command.raw_arg(msi_folder_argument(dir)?);
+        }
+        for argument in msi_scope_arguments(scope) {
+            command.raw_arg(argument);
+        }
+        let status = command.status().map_err(|e| format!("couldn't start the Windows Installer ({e})"))?;
+        explain(status.code()).map_err(|e| match status.code() {
+            Some(1602) | None => e,
+            _ => format!("{e}. Its log is at {}", msi_log(msi).display()),
         })
+    }
+
+    /// Updates an app installed for all users. Jobs that are ready together go into one call, so Windows
+    /// asks for permission once for all of them; one that is alone runs as [`run_msi`] does.
+    pub(super) fn run_msi_all_users(
+        msi: &Path,
+        destination: Option<&Path>,
+        joined: &msi_batch::Joined<'_>,
+        stop: &Stop,
+        phase: &mut dyn FnMut(JobPhase),
+    ) -> Result<(), String> {
+        let scope = Some(MsiScope::PerMachine);
+        run_all_users_with(msi, destination, joined, stop, phase, &|| run_direct(msi, destination, scope), &|targets| {
+            msi_batch::run(&msiexec(), targets)
+        })
+    }
+
+    /// [`run_msi_all_users`] with the two ways of installing handed in: `alone` for a job that is the
+    /// only one in its call, `together` for the command lines of every job of a call of several.
+    pub(super) fn run_all_users_with(
+        msi: &Path,
+        destination: Option<&Path>,
+        joined: &msi_batch::Joined<'_>,
+        stop: &Stop,
+        phase: &mut dyn FnMut(JobPhase),
+        alone: &dyn Fn() -> Result<(), String>,
+        together: &dyn Fn(&[std::ffi::OsString]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use std::ffi::OsString;
+        let line = msi_batch::line(msi, destination, Some(MsiScope::PerMachine))?;
+        INSTALLER.batched_when(
+            vec![OsString::from(msi_batch::COMMAND)],
+            OsString::from(line),
+            &cancelled(stop),
+            &mut turn(phase, JobPhase::Installing),
+            &|_, targets| match targets {
+                [_one] => alone(),
+                _ => together(targets),
+            },
+            // Queued: this job's package is ready, so the others need not wait for it any more.
+            &|| joined.arrived(),
+            &|_| msi_batch::everyone_here(),
+        )
     }
 
     /// Runs the launcher's own new MSI for a self-update, with the same progress window and no
