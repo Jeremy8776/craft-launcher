@@ -7,7 +7,7 @@ use artcraft_launcher_core::protocol::{
 };
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::status::AppStatus;
-use artcraft_launcher_core::{PackageKind, Platform, SUITE};
+use artcraft_launcher_core::{Arch, PackageKind, Platform, SUITE};
 
 use crate::i18n::set_current;
 use crate::model::AppEntry;
@@ -63,8 +63,9 @@ pub trait Host {
     }
     /// The folder a new install of this format goes inside when the person hasn't chosen one, so
     /// the install-folder field can show that folder instead of only saying "System default".
-    /// `None` when this host has no single answer (the web build; formats the system manages).
-    fn default_install_folder(&mut self, _kind: PackageKind) -> Option<String> {
+    /// `arch` is the package's architecture when the release names one. `None` when this host
+    /// has no single answer (the web build; formats the system manages).
+    fn default_install_folder(&mut self, _kind: PackageKind, _arch: Option<Arch>) -> Option<String> {
         None
     }
     /// The URL to open when Discord is clicked. Defaults to the web link.
@@ -453,6 +454,18 @@ impl LauncherUi {
             Some(artcraft_launcher_core::Os::MacOs) => preferred.filter(|kind| *kind == PackageKind::Dmg).unwrap_or(PackageKind::Dmg),
             _ => preferred.unwrap_or(PackageKind::AppImage),
         }
+    }
+
+    /// The architecture of the package a new install of this app would use, when the release and
+    /// its assets name one: a 32-bit Windows package installs under `Program Files (x86)`, not
+    /// the launcher's own Program Files, so the default folder follows the package.
+    pub(crate) fn fresh_asset_arch(&self, id: &str) -> Option<Arch> {
+        let entry = self.entry(id)?;
+        let LatestRelease::Found(release) = entry.latest.as_ref()? else { return None };
+        let stems: Vec<&str> = entry.app.stems().collect();
+        let platform = self.platform?;
+        let (asset, _) = artcraft_launcher_core::platform::pick_asset(release, &stems, platform, &[self.fresh_install_kind()])?;
+        artcraft_launcher_core::platform::parse_asset_name(&asset.name, &stems)?.arch()
     }
 
     /// Asks to install `id`. On a host that supports custom folders and for an app that is not
