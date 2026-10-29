@@ -315,7 +315,7 @@ pub fn default_folder(kind: PackageKind, arch: Option<Arch>, paths: &Paths) -> O
     #[cfg(target_os = "macos")]
     {
         let _ = (arch, paths);
-        (kind == PackageKind::Dmg).then(|| macos::applications_dir(None, None).ok()).flatten()
+        (kind == PackageKind::Dmg).then(macos::default_applications_dir).flatten()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -357,6 +357,19 @@ fn write_probe(dir: &Path) -> std::io::Result<()> {
     ));
     drop(std::fs::OpenOptions::new().write(true).create_new(true).open(&probe)?);
     std::fs::remove_file(&probe)
+}
+
+/// The folder a new macOS app goes inside: `system` (`/Applications`) when this account can
+/// create files there, else `Applications` in `home`. It creates nothing, so the install-folder
+/// hint can ask on a redraw: `write_probe` takes a fresh name with `create_new`, so a link
+/// planted in `/Applications` is never followed and no existing file is touched. The installer
+/// creates `~/Applications` itself when it gets that answer.
+#[cfg(any(target_os = "macos", test))]
+fn mac_applications_dir(system: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if write_probe(system).is_ok() {
+        return Some(system.to_path_buf());
+    }
+    home.map(|home| home.join("Applications"))
 }
 
 #[cfg(any(windows, test))]
@@ -1373,8 +1386,10 @@ pub mod macos {
 
     use super::{CraftApp, InstallSource, Installed, Path, PathBuf, Paths, Release, process, staging_dir, swap_into_place};
 
-    /// `/Applications` when we can write there, else `~/Applications`.
-    pub(super) fn applications_dir(existing: Option<&Installed>, destination: Option<&Path>) -> Result<PathBuf, String> {
+    const SYSTEM_APPLICATIONS: &str = "/Applications";
+
+    /// `/Applications` when we can write there, else `~/Applications`, which is created.
+    fn applications_dir(existing: Option<&Installed>, destination: Option<&Path>) -> Result<PathBuf, String> {
         if let Some(parent) =
             existing.filter(|i| i.source == InstallSource::MacApp).and_then(|i| Path::new(&i.location).parent().map(Path::to_path_buf))
         {
@@ -1383,15 +1398,16 @@ pub mod macos {
         if let Some(dir) = destination {
             return Ok(dir.to_path_buf());
         }
-        let system = PathBuf::from("/Applications");
-        let probe = system.join(".artcraft-launcher-write-test");
-        if std::fs::write(&probe, b"").is_ok() {
-            let _ = std::fs::remove_file(&probe);
-            return Ok(system);
+        let dir = default_applications_dir().ok_or("no home folder")?;
+        if dir != Path::new(SYSTEM_APPLICATIONS) {
+            std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
         }
-        let user = dirs::home_dir().ok_or("no home folder")?.join("Applications");
-        std::fs::create_dir_all(&user).map_err(|e| format!("couldn't create {} ({e})", user.display()))?;
-        Ok(user)
+        Ok(dir)
+    }
+
+    /// The same choice as a fresh install makes, creating nothing: the install-folder hint.
+    pub(super) fn default_applications_dir() -> Option<PathBuf> {
+        super::mac_applications_dir(Path::new(SYSTEM_APPLICATIONS), dirs::home_dir().as_deref())
     }
 
     /// The Apple Developer team that signs every Craft App and ArtCraft Launcher (Learning
@@ -1948,8 +1964,36 @@ mod tests {
         let paths = Paths::under(std::path::Path::new("/tmp/scratch"));
         // `/Applications` when we can write there, else `~/Applications`: the same choice the
         // installer makes, so the hint never disagrees with where the app really goes.
-        assert_eq!(default_folder(PackageKind::Dmg, None, &paths), macos::applications_dir(None, None).ok());
+        assert_eq!(default_folder(PackageKind::Dmg, None, &paths), macos::default_applications_dir());
         assert_eq!(default_folder(PackageKind::Msi, None, &paths), None);
+    }
+
+    /// The macOS default-folder answer is asked on a redraw, so it must leave the disk as it was:
+    /// nothing left in a writable `/Applications`, no `~/Applications` created when it is not.
+    #[test]
+    fn the_mac_default_folder_lookup_creates_nothing() {
+        let system = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(mac_applications_dir(system.path(), Some(home.path())), Some(system.path().to_path_buf()));
+        assert_eq!(std::fs::read_dir(system.path()).unwrap().count(), 0, "the write probe was left behind");
+
+        let unwritable = system.path().join("missing");
+        assert_eq!(mac_applications_dir(&unwritable, Some(home.path())), Some(home.path().join("Applications")));
+        assert!(!home.path().join("Applications").exists(), "a folder hint must not create ~/Applications");
+        assert_eq!(mac_applications_dir(&unwritable, None), None);
+    }
+
+    /// A link planted under the old fixed probe name must not be followed: the probe once wrote
+    /// through it and truncated whatever it pointed at.
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_default_folder_lookup_does_not_write_through_a_planted_link() {
+        let system = tempfile::tempdir().unwrap();
+        let victim = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(victim.path(), b"keep me").unwrap();
+        std::os::unix::fs::symlink(victim.path(), system.path().join(".artcraft-launcher-write-test")).unwrap();
+        assert_eq!(mac_applications_dir(system.path(), None), Some(system.path().to_path_buf()));
+        assert_eq!(std::fs::read(victim.path()).unwrap(), b"keep me");
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]

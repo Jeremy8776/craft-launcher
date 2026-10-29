@@ -482,12 +482,16 @@ fn claim_notification_identity() -> &'static Result<(), String> {
     })
 }
 
+/// A default-folder question (format and architecture) with the host's answer.
+type DefaultFolderAnswer = ((artcraft_launcher_core::PackageKind, Option<artcraft_launcher_core::Arch>), Option<String>);
+
 struct DesktopHost {
     tray: bool,
     quit: bool,
-    /// The last default-folder question with its answer: the fields redraw often while a dialog
-    /// is open, and the macOS answer probes the disk.
-    default_folder: Option<(artcraft_launcher_core::PackageKind, Option<artcraft_launcher_core::Arch>, Option<String>)>,
+    /// Default-folder answers by question: the fields redraw often while a dialog is open,
+    /// Settings asks once per app's package, and the macOS answer probes the disk. There are
+    /// only a handful of distinct questions (format and architecture).
+    default_folders: Vec<DefaultFolderAnswer>,
 }
 
 impl Host for DesktopHost {
@@ -538,16 +542,13 @@ impl Host for DesktopHost {
     }
 
     fn default_install_folder(&mut self, kind: artcraft_launcher_core::PackageKind, arch: Option<artcraft_launcher_core::Arch>) -> Option<String> {
-        if let Some((asked_kind, asked_arch, answer)) = &self.default_folder
-            && *asked_kind == kind
-            && *asked_arch == arch
-        {
+        if let Some((_, answer)) = self.default_folders.iter().find(|(question, _)| *question == (kind, arch)) {
             return answer.clone();
         }
         let answer = artcraft_launcher_native::paths::Paths::new().ok().and_then(|paths| {
             artcraft_launcher_native::install::default_folder(kind, arch, &paths).and_then(|folder| folder.to_str().map(str::to_string))
         });
-        self.default_folder = Some((kind, arch, answer.clone()));
+        self.default_folders.push(((kind, arch), answer.clone()));
         answer
     }
 
@@ -600,7 +601,7 @@ impl Launcher {
             system_theme: system_theme::Monitor::default(),
             ui: LauncherUi::new(&windowless, backend, Settings::default()),
             tray: None,
-            host: DesktopHost { tray: false, quit: false, default_folder: None },
+            host: DesktopHost { tray: false, quit: false, default_folders: Vec::new() },
             starts,
             windowless,
             run_again,

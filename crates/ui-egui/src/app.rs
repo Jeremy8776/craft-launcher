@@ -442,32 +442,6 @@ impl LauncherUi {
             && !crate::settings::is_flatpak_sandbox()
     }
 
-    /// The format a new install would use, mirroring the Settings chooser: the saved preference
-    /// when the platform offers it, else the platform's normal format. The release picked at
-    /// install time can still differ; this only chooses which default folder to show.
-    pub(crate) fn fresh_install_kind(&self) -> PackageKind {
-        let preferred = self.settings.preferred_kinds.first().copied();
-        match self.platform.as_ref().map(|p| p.os) {
-            Some(artcraft_launcher_core::Os::Windows) => {
-                preferred.filter(|kind| matches!(kind, PackageKind::Msi | PackageKind::PortableZip)).unwrap_or(PackageKind::Msi)
-            }
-            Some(artcraft_launcher_core::Os::MacOs) => preferred.filter(|kind| *kind == PackageKind::Dmg).unwrap_or(PackageKind::Dmg),
-            _ => preferred.unwrap_or(PackageKind::AppImage),
-        }
-    }
-
-    /// The architecture of the package a new install of this app would use, when the release and
-    /// its assets name one: a 32-bit Windows package installs under `Program Files (x86)`, not
-    /// the launcher's own Program Files, so the default folder follows the package.
-    pub(crate) fn fresh_asset_arch(&self, id: &str) -> Option<Arch> {
-        let entry = self.entry(id)?;
-        let LatestRelease::Found(release) = entry.latest.as_ref()? else { return None };
-        let stems: Vec<&str> = entry.app.stems().collect();
-        let platform = self.platform?;
-        let (asset, _) = artcraft_launcher_core::platform::pick_asset(release, &stems, platform, &[self.fresh_install_kind()])?;
-        artcraft_launcher_core::platform::parse_asset_name(&asset.name, &stems)?.arch()
-    }
-
     /// Asks to install `id`. On a host that supports custom folders and for an app that is not
     /// installed, it opens the folder dialog and sends nothing until that is confirmed; otherwise
     /// it queues `Install` immediately, including for an already installed app (update/reinstall).

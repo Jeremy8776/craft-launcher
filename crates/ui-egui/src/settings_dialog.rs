@@ -203,7 +203,7 @@ impl LauncherUi {
         sheet::panel(ui, tl!("Default install folder"), |ui| {
             if self.custom_install_folders() {
                 let mut folder = self.settings.install_locations.root.clone().unwrap_or_default();
-                let default = host.default_install_folder(self.fresh_install_kind(), self.platform.map(|p| p.arch));
+                let default = self.suite_default_folder(host);
                 Self::folder_field(ui, &mut folder, default.as_deref(), host);
                 self.settings.install_locations.root = (!folder.is_empty()).then_some(folder);
                 note(ui, tl!("New installs use this folder. Updates stay in their current location."));
