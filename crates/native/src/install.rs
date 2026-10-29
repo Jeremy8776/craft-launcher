@@ -895,8 +895,9 @@ fn root_outcome(code: Option<i32>) -> Result<(), String> {
 }
 
 /// How the error of an installer call shared by several apps ends (see `linux::shared_outcome` and
-/// `msi_batch::outcome`).
-const SHARED_CALL: &str = "apps together. Try them one at a time.";
+/// `msi_batch::outcome`). "In one go" covers a Linux package call, a Windows batch under one
+/// prompt, and its fallback where each package ran by itself but the run still has one result.
+const SHARED_CALL: &str = "apps in one go. Try them one at a time.";
 
 /// Whether an install failed in one installer call shared with other apps (Linux packages
 /// installed together, or Windows all-users updates under one permission prompt). Such a call can
@@ -2682,7 +2683,7 @@ mod tests {
         assert_eq!(linux::shared_outcome(failed(), 1), failed());
         assert_eq!(
             linux::shared_outcome(failed(), 3),
-            Err("the system installer stopped with error 100 while handling 3 apps together. Try them one at a time.".into())
+            Err("the system installer stopped with error 100 while handling 3 apps in one go. Try them one at a time.".into())
         );
         // A dismissed password prompt stays a cancellation for every app, not an error.
         assert_eq!(linux::shared_outcome(Err("cancelled".into()), 3), Err("cancelled".into()));
@@ -2752,7 +2753,7 @@ mod tests {
         // apt failed: both apps say so, and how to find the one at fault.
         let (ran, results) = two_debs_through_pkexec(100);
         assert_eq!(ran.len(), 1, "{ran:?}");
-        let error = "the system installer stopped with error 100 while handling 2 apps together. Try them one at a time.";
+        let error = "the system installer stopped with error 100 while handling 2 apps in one go. Try them one at a time.";
         assert_eq!(results, vec![Err(error.to_string()); 2]);
     }
 

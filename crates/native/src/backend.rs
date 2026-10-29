@@ -1700,7 +1700,7 @@ mod tests {
             assert!(!landed_after(error), "{error}");
         }
         // A call shared with other apps may have installed this one before it failed.
-        let shared = "the system installer stopped with error 100 while handling 2 apps together. Try them one at a time.";
+        let shared = "the system installer stopped with error 100 while handling 2 apps in one go. Try them one at a time.";
         assert_eq!(landed_after(shared), cfg!(any(target_os = "linux", windows)));
         assert!(!landed_despite(shared, before.as_ref(), before.as_ref(), &latest));
     }

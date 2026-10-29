@@ -58,7 +58,7 @@ fn exit_codes_mean_the_same_as_for_one_app() {
 #[test]
 fn a_failure_of_a_shared_call_says_so_so_the_backend_checks_what_landed() {
     let error = outcome(Some(1603), 3).unwrap_err();
-    assert_eq!(error, "the Windows Installer stopped with error 1603 while handling 3 apps together. Try them one at a time.");
+    assert_eq!(error, "the Windows Installer stopped with error 1603 while handling 3 apps in one go. Try them one at a time.");
     assert!(crate::install::failed_in_shared_call(&error));
     assert!(!crate::install::failed_in_shared_call(&outcome(Some(1603), 1).unwrap_err()));
 }
