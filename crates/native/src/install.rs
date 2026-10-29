@@ -23,9 +23,11 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use artcraft_launcher_core::Arch;
 use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, InstallLocations, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
-use artcraft_launcher_core::{Arch, CraftApp, InstallSource, Installed, PackageKind, version};
+use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind, version};
 
 use crate::http::{Http, Stop, Transfer};
 use crate::manifest::Record;
@@ -313,7 +315,7 @@ pub fn default_folder(kind: PackageKind, arch: Option<Arch>, paths: &Paths) -> O
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = arch;
+        let _ = (arch, paths);
         (kind == PackageKind::Dmg).then(|| macos::applications_dir(None, None).ok()).flatten()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -1955,8 +1957,8 @@ mod tests {
     #[test]
     fn formats_the_system_manages_have_no_single_default_folder() {
         let paths = Paths::under(std::path::Path::new("/tmp/scratch"));
-        assert_eq!(default_folder(PackageKind::Deb, &paths), None);
-        assert_eq!(default_folder(PackageKind::AppImage, &paths), None);
+        assert_eq!(default_folder(PackageKind::Deb, None, &paths), None);
+        assert_eq!(default_folder(PackageKind::AppImage, None, &paths), None);
     }
 
     #[cfg(unix)]
