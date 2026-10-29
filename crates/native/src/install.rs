@@ -23,7 +23,6 @@
 
 use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
 use artcraft_launcher_core::Arch;
 use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, InstallLocations, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
