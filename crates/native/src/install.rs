@@ -726,13 +726,22 @@ fn remove_appimage(app: &CraftApp, path: &Path, record: Option<&Record>) -> Resu
 pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<(), String> {
     let _ = paths;
     let path = Path::new(&installed.location);
+    // Every app is told where the shared version-choice file is (see `craft_update::pins`), so
+    // it finds it even when its own data folder points elsewhere: a redirected home, a sandbox,
+    // or a launcher whose data folder moved.
+    let pins = craft_update::pins::Pins::default_path();
+    let env: Vec<(&str, &std::ffi::OsStr)> = pins.iter().map(|p| (craft_update::pins::PATH_ENV, p.as_os_str())).collect();
     match installed.source {
         InstallSource::Flatpak => {
             let mut cmd = process::flatpak_command();
+            cmd.arg("run");
+            cmd.args(process::env_args(&env));
             // The id detection found it under, which may be one of the app's older ones.
-            cmd.args(["run", &installed.package.clone().unwrap_or_else(|| app.bundle_id())]);
+            cmd.arg(installed.package.clone().unwrap_or_else(|| app.bundle_id()));
             process::spawn_detached(cmd)
         }
+        // `open` starts the app through Launch Services, which gives it the user's real home, so
+        // it finds the file at its default path; not every macOS `open` takes an environment.
         InstallSource::MacApp => process::open(path.as_os_str()),
         // A tarball the launcher unpacked into its own folder: run it here, against its own
         // home, rather than on the host through `flatpak-spawn` (which is what `launch_binary`
@@ -746,11 +755,9 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
             for (name, value) in home_env(&home) {
                 cmd.env(name, value);
             }
-            // Its data folder now points inside its own home, so name the real version-choice
-            // file, or the app would never see that the launcher keeps it on another version.
-            if let Some(pins) = craft_update::pins::Pins::default_path() {
-                cmd.env(craft_update::pins::PATH_ENV, pins);
-            }
+            // Its data folder now points inside its own home, so this is the only way it finds
+            // the real version-choice file.
+            cmd.envs(env.iter().copied());
             if let Some(dir) = path.parent() {
                 cmd.current_dir(dir);
             }
@@ -767,7 +774,7 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
                 }
                 return Err(format!("{} isn't where it was installed ({})", app.name, path.display()));
             }
-            process::launch_binary(path, &[])
+            process::launch_binary_with_env(path, &[], &env)
         }
     }
     .map_err(|e| format!("Couldn't open {}: {e}", app.name))
