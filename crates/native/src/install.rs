@@ -746,6 +746,11 @@ pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<()
             for (name, value) in home_env(&home) {
                 cmd.env(name, value);
             }
+            // Its data folder now points inside its own home, so name the real version-choice
+            // file, or the app would never see that the launcher keeps it on another version.
+            if let Some(pins) = craft_update::pins::Pins::default_path() {
+                cmd.env(craft_update::pins::PATH_ENV, pins);
+            }
             if let Some(dir) = path.parent() {
                 cmd.current_dir(dir);
             }
