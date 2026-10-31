@@ -94,8 +94,10 @@ redundant. Removing or "simplifying" one reopens it, so change them only with th
 - **Packages are resolved, then held, then hashed and publisher-checked, and that one path goes to
   `msiexec`** (`held`, `run_msi`, `downgrade_msi`). The downloads folder is the person's own: a
   file or a junction above it could be swapped between the check and the install.
-- **A release build refuses an all-users install when it can't verify its own signature**
-  (`held::skips_unsigned_self`). Only a development build skips the check.
+- **A release build refuses an all-users install of an official app when it can't verify its own
+  signature** (`held::skips_unsigned_self`). Only a development build skips the check. A community
+  app is signed by its own developer, so its package checksum is the check, and its all-users
+  downgrade is refused before the prompt.
 - **Run folders live in `Program Files\ArtCraft\Launcher installer runs`, never ProgramData**, and a
   link or junction in place of that folder is refused. Ordinary accounts can add files in
   ProgramData, so they could plant a result or redirect the clean-up.
