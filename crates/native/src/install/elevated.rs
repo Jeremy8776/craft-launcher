@@ -452,6 +452,9 @@ fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
         .collect();
     let folder = checked_folder(job.folder.as_deref(), &registered, app.name)?;
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
+    // Every staged copy goes when this returns, whatever stopped it: Windows Installer keeps its
+    // own copy of what it installed, and the logs stay for diagnosis.
+    let staged = Staged(vec![dir.join(CHOSEN), dir.join(PREVIOUS)]);
     let chosen = stage(&job.chosen, dir, CHOSEN)?;
     let previous = stage(&job.previous, dir, PREVIOUS)?;
     signed_like(&me, &chosen)?;
@@ -467,10 +470,19 @@ fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
         install_chosen: &mut || windows::run_direct(&chosen, folder, scope),
         reinstall_previous: &mut || windows::run_direct(&previous, folder, scope),
     });
-    // Windows Installer keeps its own copy of what it installed; the logs stay for diagnosis.
-    let _ = std::fs::remove_file(&chosen);
-    let _ = std::fs::remove_file(&previous);
+    drop(staged);
     done
+}
+
+/// Removes the files it names when dropped.
+struct Staged(Vec<PathBuf>);
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        for file in &self.0 {
+            let _ = std::fs::remove_file(file);
+        }
+    }
 }
 
 #[cfg(test)]

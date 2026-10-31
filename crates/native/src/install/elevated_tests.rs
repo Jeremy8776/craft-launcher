@@ -303,3 +303,14 @@ fn a_package_must_share_the_subject_and_the_issuing_organisation() {
     let nameless = signer("Learning Machines Inc", "Self", None);
     assert!(!same_publisher(&nameless, &nameless), "an issuer with no organisation proves nothing");
 }
+
+#[test]
+fn staged_copies_go_however_the_run_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let (chosen, previous) = (dir.path().join(CHOSEN), dir.path().join(PREVIOUS));
+    std::fs::write(&chosen, "c").unwrap();
+    let staged = Staged(vec![chosen.clone(), previous.clone()]);
+    drop(staged);
+    assert!(!chosen.exists(), "a staged copy goes");
+    assert!(!previous.exists(), "a copy that was never staged is no error");
+}
