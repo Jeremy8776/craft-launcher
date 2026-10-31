@@ -50,7 +50,7 @@ fn job(folder: Option<&str>) -> Job {
     }
 }
 
-/// Splits a command line the way the elevated copy receives it: quotes group, and are removed.
+/// Splits a command line the way the helper receives it: quotes group, and are removed.
 fn split(line: &str) -> Vec<OsString> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -313,4 +313,17 @@ fn staged_copies_go_however_the_run_ends() {
     drop(staged);
     assert!(!chosen.exists(), "a staged copy goes");
     assert!(!previous.exists(), "a copy that was never staged is no error");
+}
+
+#[test]
+fn the_helper_is_only_ever_the_one_beside_the_launcher() {
+    let dir = tempfile::tempdir().unwrap();
+    let launcher = dir.path().join("artcraft-launcher.exe");
+    let error = helper_beside(&launcher).unwrap_err();
+    assert!(error.contains("nothing was changed"), "{error}");
+    std::fs::create_dir(dir.path().join(HELPER)).unwrap();
+    assert!(helper_beside(&launcher).is_err(), "a folder of that name is not the helper");
+    std::fs::remove_dir(dir.path().join(HELPER)).unwrap();
+    std::fs::write(dir.path().join(HELPER), b"helper").unwrap();
+    assert_eq!(helper_beside(&launcher).unwrap(), dir.path().join(HELPER));
 }

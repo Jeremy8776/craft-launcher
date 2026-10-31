@@ -1,0 +1,33 @@
+[package]
+name = "artcraft-launcher-helper"
+description = "ArtCraft Launcher's installer helper: the only part of the launcher that runs elevated"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+publish = false
+
+# The workspace's lints, except `unsafe_code`: `deny` here, not `forbid`, so the one reviewed
+# call in `main.rs` can allow it. `forbid` can't be lifted for a single item.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+wildcard_imports = "deny"
+dbg_macro = "warn"
+todo = "warn"
+
+[dependencies]
+artcraft-launcher-native = { workspace = true }
+log = { workspace = true }
+
+# `SetDefaultDllDirectories`, which winsafe doesn't wrap. Already in Cargo.lock.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader"] }
+
+[build-dependencies]
+# VERSIONINFO for the permission prompt and Task Manager; build.rs only uses it on Windows.
+winresource = "0.1"

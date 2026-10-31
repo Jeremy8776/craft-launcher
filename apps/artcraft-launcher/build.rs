@@ -12,9 +12,9 @@ fn main() {
         return;
     }
     // The exe's own imports come only from System32 (`LOAD_LIBRARY_SEARCH_SYSTEM32`), never its
-    // folder: a per-user install's folder is writable by the person's programs, and the launcher
-    // also runs elevated as the installer helper. Checked on Windows 11 with a planted
-    // `version.dll`. It doesn't cover DLLs that system DLLs load later (see `install/elevated.rs`).
+    // folder: a per-user install's folder is writable by the person's programs. Checked on
+    // Windows 11 with a planted `version.dll`. It doesn't cover DLLs that system DLLs load later,
+    // which is why elevated work runs in `artcraft-launcher-helper` instead.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
     }

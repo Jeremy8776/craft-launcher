@@ -11,7 +11,7 @@
 //!    installed version goes back in from its package.
 //!
 //! An all-users copy needs Windows' permission, and the three steps run under ONE prompt, in an
-//! elevated copy of the launcher's own program ([`elevated`](super::elevated)), which calls [`run`]
+//! elevated run of the launcher's installer helper ([`elevated`](super::elevated)), which calls [`run`]
 //! there. Saying no changes nothing, and once it is yes, putting the old version back needs no
 //! second answer. Separate prompts proved fragile: they look identical, so a refused install was
 //! followed by a refused put-back, read as a retry, leaving no app at all.

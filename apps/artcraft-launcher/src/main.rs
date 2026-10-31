@@ -42,16 +42,6 @@ fn main() -> ExitCode {
     if let Some(done) = artcraft_launcher_native::self_update::finish(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
         return if done.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE };
     }
-    // An elevated copy of the launcher doing all-users Windows Installer work behind one prompt.
-    #[cfg(windows)]
-    if let Some(done) = artcraft_launcher_native::install::elevated::finish(&std::env::args_os().skip(1).collect::<Vec<_>>(), |dir| {
-        // Into the run folder, which only administrators can change, not the person's log folder.
-        if let Some(logs) = &logs {
-            let _ = logs.attach_dir(dir);
-        }
-    }) {
-        return if done.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE };
-    }
     // Detect system language in the background so the first frame can use it.
     artcraft_launcher_ui_egui::i18n::detect_system_lang_in_background();
     // Detect Discord protocol handler in the background without blocking startup.

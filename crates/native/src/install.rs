@@ -1929,7 +1929,7 @@ fn explain(code: Option<i32>) -> Result<(), String> {
 #[cfg(any(windows, test))]
 mod msi_downgrade;
 
-/// All-users Windows Installer work run by an elevated copy of the launcher, under one prompt.
+/// All-users Windows Installer work run by the launcher's installer helper, under one prompt.
 #[cfg(any(windows, test))]
 pub mod elevated;
 

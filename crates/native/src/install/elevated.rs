@@ -1,27 +1,29 @@
-//! All-users Windows Installer work under one permission prompt, run by the launcher's own program.
+//! All-users Windows Installer work under one permission prompt, run by the installer helper.
 //!
 //! Going back to an older version of an all-users app takes three `msiexec` steps (remove, install,
 //! put back on failure), and asking for permission at each step proved fragile: a refused later
 //! prompt can leave no app at all (see [`msi_downgrade`](super::msi_downgrade)). So the launcher
-//! starts a copy of its own signed program elevated, once: Windows' prompt names ArtCraft Launcher
-//! and its publisher. No script, interpreter or encoded command is involved; every program that
-//! runs elevated is ours or `msiexec`, called directly.
+//! starts its signed installer helper ([`HELPER`], beside the launcher) elevated, once: Windows'
+//! prompt names ArtCraft Launcher and its publisher. No script, interpreter or encoded command is
+//! involved; every program that runs elevated is ours or `msiexec`, called directly. The helper is
+//! a separate small program rather than the launcher started again, so that what runs elevated
+//! loads no DLL from its folder, which the person's programs can write (see its `main.rs`).
 //!
-//! The whole job travels on the elevated copy's command line ([`parameters`]), which nobody can
+//! The whole job travels on the helper's command line ([`parameters`]), which nobody can
 //! change once the prompt is up. Nothing it acts on is read from a file the person's account can
-//! write. The elevated copy ([`finish`]) then trusts only what it checks itself:
+//! write. The helper ([`finish`]) then trusts only what it checks itself:
 //! - each package is opened so nobody can change, move or delete it, hashed, and copied only when
 //!   it has the checksum on the command line, into a new folder under `Program Files\ArtCraft`
 //!   ([`runs_base`]), where ordinary accounts can read but neither add, change nor delete files;
-//! - each copy must carry the same Authenticode publisher as the elevated program;
+//! - each copy must carry the same Authenticode publisher as the helper;
 //! - the install folder must be the folder of one of the app's all-users registrations, read from
-//!   the registry by the elevated copy, so the caller cannot send an all-users install elsewhere.
+//!   the registry by the helper, so the caller cannot send an all-users install elsewhere.
 //!
 //! `msiexec` then installs from that folder, so nothing can be swapped between the check and the
 //! install.
 //!
 //! The prompt gives back no handle to wait on (`winsafe`'s `ShellExecuteEx` keeps it), so the two
-//! processes meet in that folder: the elevated copy holds a lock file there without sharing while
+//! processes meet in that folder: the helper holds a lock file there without sharing while
 //! it works and writes its result beside it before letting go. The launcher waits for the lock to
 //! appear, then to be released, then reads the result.
 
@@ -33,14 +35,16 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// The first argument of the elevated copy, followed by the job ([`parameters`]).
+/// The first argument of the helper, followed by the job ([`parameters`]).
 pub const FLAG: &str = "--elevated-windows-installer";
+/// The installer helper's file name, in the launcher's own folder.
+pub const HELPER: &str = "artcraft-launcher-helper.exe";
 
 /// The folder in `Program Files\ArtCraft` that holds each run's folder.
 const RUNS: &str = "Launcher installer runs";
 /// Each run's folder is this followed by the run id.
 const RUN_PREFIX: &str = "artcraft-launcher-elevated-";
-/// Held without sharing while the elevated copy works.
+/// Held without sharing while the helper works.
 const LOCK: &str = "running";
 /// Written before the lock is let go: `ok`, or `failed` and the message on the next line.
 const RESULT: &str = "result";
@@ -110,7 +114,7 @@ fn quoted_path(path: &Path) -> Result<String, String> {
     Ok(format!("\"{text}\""))
 }
 
-/// The elevated copy's command line: [`FLAG`], the run id, the app, each package's version,
+/// The helper's command line: [`FLAG`], the run id, the app, each package's version,
 /// checksum and file, and the install folder (empty quotes for the package's own).
 fn parameters(run: &str, job: &Job) -> Result<String, String> {
     let packages = [&job.chosen, &job.previous];
@@ -126,7 +130,7 @@ fn parameters(run: &str, job: &Job) -> Result<String, String> {
 }
 
 /// Reads [`parameters`] back, checking each part again. `None` when this program was not started
-/// as the elevated copy.
+/// as the helper.
 fn parse_args(args: &[OsString]) -> Option<Result<(String, Job), String>> {
     if args.first()? != FLAG {
         return None;
@@ -157,7 +161,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     text(a).eq_ignore_ascii_case(&text(b))
 }
 
-/// The install folder the elevated copy will use: none (the package's own), or one of the
+/// The install folder the helper will use: none (the package's own), or one of the
 /// `registered` all-users folders, never a folder the caller made up.
 fn checked_folder<'a>(folder: Option<&'a Path>, registered: &[PathBuf], app: &str) -> Result<Option<&'a Path>, String> {
     match folder {
@@ -235,7 +239,7 @@ fn write_result(dir: &Path, result: &Result<(), String>) -> std::io::Result<()> 
     file.flush()
 }
 
-/// What the elevated copy reported. No result once the lock is let go means it stopped part way.
+/// What the helper reported. No result once the lock is let go means it stopped part way.
 fn read_result(dir: &Path, app: &str) -> Result<(), String> {
     let stopped = || format!("the installer helper stopped unexpectedly. Check which version of {app} is installed.");
     let text = std::fs::read_to_string(dir.join(RESULT)).map_err(|_| stopped())?;
@@ -266,7 +270,7 @@ fn clear_old_runs(base: &Path) {
 }
 
 /// Refuses `base` or its parent when either is a link or junction rather than a real folder, so
-/// the elevated copy never creates, cleans or installs from somewhere it leads.
+/// the helper never creates, cleans or installs from somewhere it leads.
 fn real_folders(base: &Path) -> Result<(), String> {
     for folder in [Some(base), base.parent()].into_iter().flatten() {
         let real = std::fs::symlink_metadata(folder).is_ok_and(|m| m.file_type().is_dir());
@@ -317,19 +321,30 @@ fn runs_base() -> Result<PathBuf, String> {
     if path.is_absolute() { Ok(path.join("ArtCraft").join(RUNS)) } else { Err("couldn't find the Program Files folder".into()) }
 }
 
+/// The installer helper beside `launcher`, the launcher's own program. Never anywhere else, so
+/// the prompt always names the program the launcher's installer put there.
+fn helper_beside(launcher: &Path) -> Result<PathBuf, String> {
+    let helper = launcher.with_file_name(HELPER);
+    if helper.is_file() {
+        Ok(helper)
+    } else {
+        Err(format!("the installer helper ({HELPER}) is missing beside ArtCraft Launcher, so nothing was changed. Reinstall ArtCraft Launcher."))
+    }
+}
+
 /// Where a run's lock stands, as the launcher sees it.
 #[derive(Debug, PartialEq, Eq)]
 enum Lock {
-    /// The elevated copy hasn't started yet.
+    /// The helper hasn't started yet.
     Missing,
     Held,
-    /// The elevated copy has finished, or stopped.
+    /// The helper has finished, or stopped.
     Released,
 }
 
 #[cfg(windows)]
 fn lock_state(lock: &Path) -> Result<Lock, String> {
-    /// `ERROR_SHARING_VIOLATION`: the elevated copy holds the file without sharing.
+    /// `ERROR_SHARING_VIOLATION`: the helper holds the file without sharing.
     const SHARING_VIOLATION: i32 = 32;
     match std::fs::File::open(lock) {
         Ok(_) => Ok(Lock::Released),
@@ -339,7 +354,7 @@ fn lock_state(lock: &Path) -> Result<Lock, String> {
     }
 }
 
-/// Waits for the elevated copy to take its lock (up to `start`) and then to let it go.
+/// Waits for the helper to take its lock (up to `start`) and then to let it go.
 #[cfg(windows)]
 fn wait(lock: &Path, start: std::time::Duration) -> Result<(), String> {
     let began = std::time::Instant::now();
@@ -354,7 +369,7 @@ fn wait(lock: &Path, start: std::time::Duration) -> Result<(), String> {
     }
 }
 
-/// Runs `job` for `app` (its name, for messages) in an elevated copy of this program, behind one
+/// Runs `job` for `app` (its name, for messages) in the installer helper, elevated behind one
 /// permission prompt, and waits for it. A refused prompt is
 /// [`CANCELLED`](artcraft_launcher_core::protocol::CANCELLED) and changes nothing.
 #[cfg(windows)]
@@ -364,19 +379,13 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
 
     let run = new_run()?;
     let parameters = parameters(&run, job)?;
-    // shortcut: this program lives in the person's own Programs folder (the launcher installs per
-    // user), which their programs can write. Its own imports come only from System32 (build.rs), but
-    // DLLs that system DLLs load later still look in this folder first: a planted `msasn1.dll`,
-    // which crypt32 loads during the signature check, was loaded in a test on Windows 11. Closing
-    // that needs `SetDefaultDllDirectories` before anything else runs (no safe wrapper exists, and
-    // `unsafe` is forbidden here) or a helper in a folder only administrators can write. Decide
-    // before release.
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
+    let helper = helper_beside(&me)?;
     log::info!("{app}: going back to {} under one permission prompt", job.chosen.version);
     let asked = ShellExecuteEx(&SHELLEXECUTEINFO {
         mask: co::SEE_MASK::NOASYNC | co::SEE_MASK::FLAG_NO_UI,
         verb: Some("runas"),
-        file: super::windows_text(&me)?,
+        file: super::windows_text(&helper)?,
         parameters: Some(&parameters),
         // Nothing is hidden: the helper opens no window of its own, and msiexec shows its progress.
         show: co::SW::SHOWNORMAL,
@@ -387,14 +396,14 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
         Err(co::ERROR::CANCELLED) => return Err(CANCELLED.to_string()),
         Err(e) => return Err(format!("couldn't ask Windows for permission ({e}), so nothing was changed")),
     }
-    // Only an administrator can make or fill this folder, so the result is the elevated copy's.
+    // Only an administrator can make or fill this folder, so the result is the helper's.
     let dir = run_dir(&runs_base()?, &run);
     wait(&dir.join(LOCK), std::time::Duration::from_secs(60))?;
     read_result(&dir, app)
 }
 
-/// The elevated copy's work, when this program was started with [`FLAG`]; `args` are its arguments
-/// without the program name. `None` otherwise. `log_to` is given the run folder as soon as it
+/// The helper's work, when it was started with [`FLAG`]; `args` are its arguments without the
+/// program name. `None` otherwise. `log_to` is given the run folder as soon as it
 /// exists, for the log ([`LOG`]).
 #[cfg(windows)]
 pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<(), String>> {

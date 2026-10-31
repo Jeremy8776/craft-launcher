@@ -88,8 +88,11 @@ the route.
 ## Still open
 
 - **All-users downgrades:** replaced by a signed helper (`install/elevated.rs`): the launcher starts
-  a copy of its own program elevated, so the one prompt names ArtCraft Launcher. The job travels on
-  that copy's command line, not in a file. The copy checks each package's SHA-256 and Authenticode
+  `artcraft-launcher-helper.exe`, installed beside it, elevated, so the one prompt names ArtCraft
+  Launcher. The helper is a small separate program that imports no graphics code and limits every
+  DLL load to System32 before it does anything else, so a DLL planted in the launcher's per-user
+  folder is never loaded elevated. The job travels on the helper's command line, not in a file. The
+  helper checks each package's SHA-256 and Authenticode
   publisher, copies it into a new folder under `Program Files\ArtCraft`, where ordinary accounts can
   read but not add, change or delete files, installs only into a folder the app is already
   registered in for all users, and runs `msiexec` directly. No PowerShell, script or encoded
