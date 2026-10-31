@@ -12,10 +12,16 @@
 //!   `msasn1.dll` crypt32 loads during the signature check. If that fails, it does nothing else.
 //!
 //! It opens no window. Its log goes into the run folder, which only administrators can change.
+//!
+//! Its `unsafe` is limited to Windows calls with no safe wrapper, each reviewed where it is:
+//! [`load_from_system32_only`] here, and in [`package_facts`] the signing root and UpgradeCode
+//! that `install::identity` uses to admit only our packages, for the app they replace.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(windows)]
+mod package_facts;
 #[cfg(windows)]
 mod run_log;
 
@@ -29,7 +35,7 @@ fn main() -> ExitCode {
         }
         let log = run_log::install();
         let args: Vec<_> = std::env::args_os().skip(1).collect();
-        let done = artcraft_launcher_native::install::elevated::finish(&args, |dir| {
+        let done = artcraft_launcher_native::install::elevated::finish(&args, &package_facts::WindowsFacts, |dir| {
             if let Some(log) = &log {
                 log.attach(dir);
             }
@@ -44,9 +50,8 @@ fn main() -> ExitCode {
 /// Makes every later DLL load in this process search System32 only, never this program's folder,
 /// the current folder or `PATH`. Whether Windows accepted it.
 ///
-/// The one `unsafe` in the launcher, allowed here and nowhere else: winsafe doesn't wrap
-/// `SetDefaultDllDirectories`, and without it a DLL planted beside this program would be loaded
-/// into an elevated process.
+/// `unsafe` because winsafe doesn't wrap `SetDefaultDllDirectories`, and without it a DLL planted
+/// beside this program would be loaded into an elevated process.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn load_from_system32_only() -> bool {

@@ -1933,6 +1933,10 @@ mod msi_downgrade;
 #[cfg(any(windows, test))]
 pub mod elevated;
 
+/// Which packages the elevated helper may install: signed through the pinned root, and the app it replaces.
+#[cfg(any(windows, test))]
+pub mod identity;
+
 /// A downloaded package held unchanged from its last check until `msiexec` is done with it.
 #[cfg(any(windows, test))]
 mod held;

@@ -49,8 +49,10 @@ settings file must produce an error the user can act on, never a panic.
 - Every production crate root (`lib.rs`, each binary's `main.rs`, and `xtask`) carries
   `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`.
 - **No `unsafe`.** The workspace sets `unsafe_code = "forbid"`. The one exception is the installer
-  helper (`apps/artcraft-launcher-helper`), which sets `unsafe_code = "deny"` for a single reviewed
-  `SetDefaultDllDirectories` call in its `main.rs`; add nothing else there.
+  helper (`apps/artcraft-launcher-helper`), which sets `unsafe_code = "deny"` for reviewed Windows
+  calls with no safe wrapper: `SetDefaultDllDirectories` in its `main.rs`, and WinTrust's chain plus
+  Windows Installer's read-only database API in `package_facts.rs`. Add nothing else there; any new
+  call needs a maintainer's review.
 - **Everything from the network is hostile.** Use `get()` instead of indexing, checked arithmetic
   for sizes and offsets, and cap downloads and JSON sizes.
 
@@ -94,6 +96,15 @@ redundant. Removing or "simplifying" one reopens it, so change them only with th
 - **Packages are resolved, then held, then hashed and publisher-checked, and that one path goes to
   `msiexec`** (`held`, `run_msi`, `downgrade_msi`). The downloads folder is the person's own: a
   file or a junction above it could be swapped between the check and the install.
+- **The helper installs only packages whose signature chains to the pinned Microsoft root**
+  (`identity::SIGNING_ROOT_SHA256`). Never fall back to the subject and issuer names alone: Windows
+  trusts roots the person's own account adds, and the helper runs as that account, so any of their
+  programs could give itself our publisher's name and have our genuine prompt install its package
+  for all users (shown live on #1080).
+- **The helper installs a package only for the app it replaces:** Windows Installer's HKLM
+  registration must link the package's UpgradeCode to every product being removed
+  (`identity::check`). Our publisher signs every Craft app and the launcher, so the signature alone
+  would let one replace another.
 - **A release build refuses an all-users install of an official app when it can't verify its own
   signature** (`held::skips_unsigned_self`). Only a development build skips the check. A community
   app is signed by its own developer, so its package checksum is the check, and its all-users

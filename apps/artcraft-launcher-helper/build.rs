@@ -14,6 +14,11 @@ fn main() {
     // covered by `SetDefaultDllDirectories` (`main.rs`).
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
+        // msi.dll is loaded on first use, after `main` has limited every load to System32. Loaded
+        // at start, its own imports were found by Windows' default search, which looks in this
+        // program's folder first: a live run with planted DLLs failed to start that way.
+        println!("cargo:rustc-link-arg-bins=/DELAYLOAD:msi.dll");
+        println!("cargo:rustc-link-arg-bins=delayimp.lib");
     }
     let mut res = winresource::WindowsResource::new();
     res.set_icon("../../assets/app-icon/artcraft-launcher.ico")

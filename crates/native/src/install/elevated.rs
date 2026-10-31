@@ -15,7 +15,8 @@
 //! - each package is opened so nobody can change, move or delete it, hashed, and copied only when
 //!   it has the checksum on the command line, into a new folder under `Program Files\ArtCraft`
 //!   ([`runs_base`]), where ordinary accounts can read but neither add, change nor delete files;
-//! - each copy must carry the same Authenticode publisher as the helper;
+//! - each copy must carry the same Authenticode publisher as the helper, chain to the pinned
+//!   root, and be a package of the app it replaces ([`identity`](super::identity));
 //! - the install folder must be the folder of one of the app's all-users registrations, read from
 //!   the registry by the helper, so the caller cannot send an all-users install elsewhere.
 //!
@@ -442,10 +443,11 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
 }
 
 /// The helper's work, when it was started with [`FLAG`]; `args` are its arguments without the
-/// program name. `None` otherwise. `log_to` is given the run folder as soon as it
-/// exists, for the log ([`LOG`]).
+/// program name. `None` otherwise. `facts` reads each package's signing root and UpgradeCode
+/// (the helper's own Windows calls). `log_to` is given the run folder as soon as it exists, for
+/// the log ([`LOG`]).
 #[cfg(windows)]
-pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<(), String>> {
+pub fn finish(args: &[OsString], facts: &dyn super::identity::PackageFacts, log_to: impl FnOnce(&Path)) -> Option<Result<(), String>> {
     use std::os::windows::fs::OpenOptionsExt;
 
     let (run, job) = match parse_args(args)? {
@@ -479,7 +481,7 @@ pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<()
     // it private would need the person's account, and the helper may run as another one.
     log_to(&dir);
     log::info!("installer helper: {} from {} to {}", job.app, job.previous.version, job.chosen.version);
-    let done = downgrade(&dir, &job);
+    let done = downgrade(&dir, &job, facts);
     match &done {
         Ok(()) => log::info!("installer helper: done"),
         Err(e) => log::warn!("installer helper: {e}"),
@@ -493,15 +495,14 @@ pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<()
 
 /// Checks the folder and both packages, stages them, then removes, installs and if needed puts back.
 #[cfg(windows)]
-fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
-    use super::{MsiScope, msi_downgrade, windows};
+fn downgrade(dir: &Path, job: &Job, facts: &dyn super::identity::PackageFacts) -> Result<(), String> {
+    use super::{MsiScope, identity, msi_downgrade, windows};
 
     let app = artcraft_launcher_core::catalog::CraftApp::by_id(&job.app).ok_or_else(|| format!("{} isn't a Craft app", job.app))?;
-    let registered: Vec<PathBuf> = crate::detect::windows::msi_installs(app)
-        .into_iter()
-        .filter(|m| m.scope == MsiScope::PerMachine)
-        .filter_map(|m| m.exe.and_then(|exe| exe.parent().map(Path::to_path_buf)))
-        .collect();
+    let installs: Vec<_> = crate::detect::windows::msi_installs(app).into_iter().filter(|m| m.scope == MsiScope::PerMachine).collect();
+    // The products the removal step takes away: both packages must belong to every one of them.
+    let removed: Vec<String> = installs.iter().map(|m| m.product_code.clone()).collect();
+    let registered: Vec<PathBuf> = installs.into_iter().filter_map(|m| m.exe.and_then(|exe| exe.parent().map(Path::to_path_buf))).collect();
     let folder = checked_folder(job.folder.as_deref(), &registered, app.name)?;
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
     // Every staged copy goes when this returns, whatever stopped it: Windows Installer keeps its
@@ -509,8 +510,10 @@ fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
     let staged = Staged(vec![dir.join(CHOSEN), dir.join(PREVIOUS)]);
     let chosen = stage(&job.chosen, dir, CHOSEN)?;
     let previous = stage(&job.previous, dir, PREVIOUS)?;
-    signed_like(&me, &chosen)?;
-    signed_like(&me, &previous)?;
+    for staged in [&chosen, &previous] {
+        signed_like(&me, staged)?;
+        identity::check(facts, staged, app.name, &removed, identity::linked_upgrade_code)?;
+    }
     let scope = Some(MsiScope::PerMachine);
     let done = msi_downgrade::run(msi_downgrade::Steps {
         app: app.name,
