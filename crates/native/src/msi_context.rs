@@ -192,7 +192,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn this_accounts_sid_is_found() {
-        assert!(current_user_sid().unwrap().starts_with("S-1-5-"));
+        // Local and domain accounts are S-1-5-..., Microsoft Entra ID accounts S-1-12-1-...: only the
+        // shape is the same, `S-1-` and then numbers.
+        let sid = current_user_sid().unwrap();
+        let parts: Vec<&str> = sid.split('-').collect();
+        let numbers = parts.get(1..).unwrap_or_default();
+        assert!(parts.first() == Some(&"S") && numbers.len() >= 3, "{sid}");
+        assert!(numbers.iter().all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())), "{sid}");
+        assert_eq!(numbers.first(), Some(&"1"), "{sid}");
     }
 
     #[test]
