@@ -90,9 +90,10 @@ the route.
 - **All-users downgrades:** replaced by a signed helper (`install/elevated.rs`): the launcher starts
   a copy of its own program elevated, so the one prompt names ArtCraft Launcher. The job travels on
   that copy's command line, not in a file. The copy checks each package's SHA-256 and Authenticode
-  publisher, copies it into a new ProgramData folder whose files ordinary accounts can read but not
-  change or delete, installs only into a folder the app is already registered in for all users, and
-  runs `msiexec` directly. No PowerShell, script or encoded command remains in the install code.
+  publisher, copies it into a new folder under `Program Files\ArtCraft`, where ordinary accounts can
+  read but not add, change or delete files, installs only into a folder the app is already
+  registered in for all users, and runs `msiexec` directly. No PowerShell, script or encoded
+  command remains in the downgrade path; one lookup is left elsewhere (see Remaining lookup).
   Not yet released, and not yet run against behavioural antivirus (see Confirmation).
 - **Confirmation:** test on a Windows VM with Kaspersky and behaviour detection on. Run Update all
   with two or more outdated all-users apps on an affected build, then on a build with #1077. The

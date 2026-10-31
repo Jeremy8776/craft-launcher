@@ -256,3 +256,35 @@ fn an_unsigned_package_is_refused() {
     std::fs::write(&unsigned, b"not a signed package").unwrap();
     assert!(signed_like(&unsigned, &unsigned).is_err());
 }
+
+#[test]
+fn the_runs_folder_and_its_parent_must_be_real_folders() {
+    let parent = tempfile::tempdir().unwrap();
+    let base = parent.path().join(RUNS);
+    std::fs::create_dir(&base).unwrap();
+    assert_eq!(real_folders(&base), Ok(()));
+
+    assert!(real_folders(&parent.path().join("missing")).is_err(), "a folder that isn't there");
+    let file = parent.path().join("a file");
+    std::fs::write(&file, "x").unwrap();
+    assert!(real_folders(&file).is_err(), "a file in the folder's place");
+    assert!(real_folders(&file.join(RUNS)).is_err(), "a parent that isn't a folder");
+}
+
+/// A link where the runs folder should be is refused, not followed. Skipped where this account
+/// may not make links (Windows without Developer Mode).
+#[test]
+fn a_link_in_place_of_the_runs_folder_is_refused() {
+    let parent = tempfile::tempdir().unwrap();
+    let target = parent.path().join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    let link = parent.path().join(RUNS);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&target, &link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, &link);
+    if made.is_err() {
+        return;
+    }
+    assert!(real_folders(&link).is_err());
+}

@@ -11,8 +11,8 @@
 //! change once the prompt is up. Nothing it acts on is read from a file the person's account can
 //! write. The elevated copy ([`finish`]) then trusts only what it checks itself:
 //! - each package is opened so nobody can change, move or delete it, hashed, and copied only when
-//!   it has the checksum on the command line, into a new folder under ProgramData whose files
-//!   ordinary accounts can read but not change or delete;
+//!   it has the checksum on the command line, into a new folder under `Program Files\ArtCraft`
+//!   ([`runs_base`]), where ordinary accounts can read but neither add, change nor delete files;
 //! - each copy must carry the same Authenticode publisher as the elevated program;
 //! - the install folder must be the folder of one of the app's all-users registrations, read from
 //!   the registry by the elevated copy, so the caller cannot send an all-users install elsewhere.
@@ -36,7 +36,9 @@ use sha2::{Digest, Sha256};
 /// The first argument of the elevated copy, followed by the job ([`parameters`]).
 pub const FLAG: &str = "--elevated-windows-installer";
 
-/// Each run's folder in ProgramData is this followed by the run id.
+/// The folder in `Program Files\ArtCraft` that holds each run's folder.
+const RUNS: &str = "Launcher installer runs";
+/// Each run's folder is this followed by the run id.
 const RUN_PREFIX: &str = "artcraft-launcher-elevated-";
 /// Held without sharing while the elevated copy works.
 const LOCK: &str = "running";
@@ -261,6 +263,18 @@ fn clear_old_runs(base: &Path) {
     }
 }
 
+/// Refuses `base` or its parent when either is a link or junction rather than a real folder, so
+/// the elevated copy never creates, cleans or installs from somewhere it leads.
+fn real_folders(base: &Path) -> Result<(), String> {
+    for folder in [Some(base), base.parent()].into_iter().flatten() {
+        let real = std::fs::symlink_metadata(folder).is_ok_and(|m| m.file_type().is_dir());
+        if !real {
+            return Err(format!("{} isn't an ordinary folder, so nothing was changed", folder.display()));
+        }
+    }
+    Ok(())
+}
+
 /// Whether `file` is signed by the same publisher as `reference` (this program).
 #[cfg(windows)]
 fn signed_like(reference: &Path, file: &Path) -> Result<(), String> {
@@ -270,14 +284,17 @@ fn signed_like(reference: &Path, file: &Path) -> Result<(), String> {
     if ours == theirs { Ok(()) } else { Err(format!("{} isn't signed by ArtCraft Launcher's publisher", file.display())) }
 }
 
-/// ProgramData, from Windows rather than the environment.
+/// `Program Files\ArtCraft\Launcher installer runs`, with Program Files from Windows rather than
+/// the environment. Not ProgramData: ordinary accounts may add files to any folder there, even one
+/// an administrator made, so they could plant a run's log or result before the helper writes it.
+/// Program Files lets them only read, and its folders hold nothing a run doesn't write.
 #[cfg(windows)]
-fn program_data() -> Result<PathBuf, String> {
+fn runs_base() -> Result<PathBuf, String> {
     use winsafe::{SHGetKnownFolderPath, co};
-    let path = SHGetKnownFolderPath(&co::KNOWNFOLDERID::ProgramData, co::KF::DEFAULT, None)
+    let path = SHGetKnownFolderPath(&co::KNOWNFOLDERID::ProgramFiles, co::KF::DEFAULT, None)
         .map(PathBuf::from)
-        .map_err(|e| format!("couldn't find the ProgramData folder ({e})"))?;
-    if path.is_absolute() { Ok(path) } else { Err("couldn't find the ProgramData folder".into()) }
+        .map_err(|e| format!("couldn't find the Program Files folder ({e})"))?;
+    if path.is_absolute() { Ok(path.join("ArtCraft").join(RUNS)) } else { Err("couldn't find the Program Files folder".into()) }
 }
 
 /// Where a run's lock stands, as the launcher sees it.
@@ -343,11 +360,8 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
         Err(co::ERROR::CANCELLED) => return Err(CANCELLED.to_string()),
         Err(e) => return Err(format!("couldn't ask Windows for permission ({e}), so nothing was changed")),
     }
-    // shortcut: the result is read from a folder another process of this account could have made
-    // first under the same run id (it only learns the id once the elevated copy starts, which then
-    // creates the folder at once, and the install itself fails closed). Check that the folder's
-    // owner is Administrators or SYSTEM before trusting the result if that window ever matters.
-    let dir = run_dir(&program_data()?, &run);
+    // Only an administrator can make or fill this folder, so the result is the elevated copy's.
+    let dir = run_dir(&runs_base()?, &run);
     wait(&dir.join(LOCK), std::time::Duration::from_secs(60))?;
     read_result(&dir, app)
 }
@@ -362,10 +376,17 @@ pub fn finish(args: &[OsString]) -> Option<Result<(), String>> {
         Ok(parsed) => parsed,
         Err(e) => return Some(Err(e)),
     };
-    let base = match program_data() {
+    let base = match runs_base() {
         Ok(base) => base,
         Err(e) => return Some(Err(e)),
     };
+    // Made here, elevated, so it takes Program Files' permissions: others may only read.
+    if let Err(e) = std::fs::create_dir_all(&base) {
+        return Some(Err(format!("couldn't create {} ({e})", base.display())));
+    }
+    if let Err(e) = real_folders(&base) {
+        return Some(Err(e));
+    }
     clear_old_runs(&base);
     let dir = run_dir(&base, &run);
     // A new folder, never one that already exists: its files are then ours alone to change.
