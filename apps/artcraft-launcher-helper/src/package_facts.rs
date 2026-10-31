@@ -39,10 +39,10 @@ fn wide(path: &Path) -> Vec<u16> {
 /// shortcut: revocation isn't checked, so a package signed with a Learning Machines certificate
 /// that was later revoked still passes. Expiry does not limit this: the packages carry RFC 3161
 /// timestamps, so a signature made while its certificate was valid stays valid after the
-/// certificate expires, and revocation is the only way to withdraw it. Not checked here because it
-/// would mean network access from this elevated process and a refused downgrade whenever offline.
-/// Which revocation policy to adopt, and where (here, or in the unelevated launcher before the
-/// prompt), is a maintainer decision (storytold/craft-launcher#1080).
+/// certificate expires, and revocation is the only way to withdraw it. The unelevated launcher
+/// checks revocation before the prompt (`install::revocation`); not here, because that would mean
+/// network access from this elevated process. A launcher bypassed by a program running as the
+/// person skips that check, and this one would then accept a revoked package.
 #[allow(unsafe_code)]
 fn signing_root(file: &Path) -> Result<String, String> {
     use windows_sys::Win32::Security::WinTrust::{

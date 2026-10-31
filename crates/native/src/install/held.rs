@@ -52,7 +52,9 @@ pub(super) fn check_publisher(app: &CraftApp, file: &Path, all_users: bool) -> R
         log::warn!("{}: this development build isn't signed ({e}), so the package's publisher wasn't checked", app.name);
         return Ok(());
     }
-    super::elevated::signed_like(&me, file)
+    super::elevated::signed_like(&me, file)?;
+    // Here, unelevated, and not in the helper: the check may fetch revocation lists.
+    super::revocation::check(file)
 }
 
 /// Whether a launcher that can't verify its own signature skips the publisher check: only a

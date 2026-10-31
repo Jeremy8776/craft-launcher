@@ -1941,6 +1941,10 @@ pub mod identity;
 #[cfg(any(windows, test))]
 mod held;
 
+/// Whether a package's signing certificate was withdrawn, asked unelevated before any prompt.
+#[cfg(any(windows, test))]
+mod revocation;
+
 /// Which program the launcher may elevate as its helper: our helper, of this build.
 #[cfg(any(windows, test))]
 mod helper_build;
