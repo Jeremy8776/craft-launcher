@@ -9,7 +9,8 @@ build = "build.rs"
 publish = false
 
 # The workspace's lints, except `unsafe_code`: `deny` here, not `forbid`, so the one reviewed
-# call in `main.rs` can allow it. `forbid` can't be lifted for a single item.
+# call in `main.rs` can allow it. `forbid` can't be lifted for a single item. A test in `main.rs`
+# fails if this copy and `[workspace.lints]` in the root Cargo.toml drift apart.
 [lints.rust]
 unsafe_code = "deny"
 

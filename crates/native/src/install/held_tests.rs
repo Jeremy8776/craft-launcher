@@ -37,6 +37,26 @@ fn a_held_package_can_only_be_read() {
     assert!(std::fs::remove_file(&file).is_ok());
 }
 
+/// Renaming a folder on the way to a held package is refused, so its resolved path keeps naming it.
+#[cfg(windows)]
+#[test]
+fn the_folders_above_a_held_package_cannot_be_renamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("downloads");
+    std::fs::create_dir(&parent).unwrap();
+    let (file, sha256) = package(&parent, b"package");
+    let held = hold(&file, &sha256).unwrap();
+    assert!(std::fs::rename(&parent, dir.path().join("moved")).is_err(), "parent renamed");
+    drop(held);
+    assert!(std::fs::rename(&parent, dir.path().join("moved")).is_ok());
+}
+
+#[test]
+fn only_a_development_build_skips_the_publisher_check_for_an_unsigned_launcher() {
+    assert!(!skips_unsigned_self(false), "a release build must refuse");
+    assert!(skips_unsigned_self(true));
+}
+
 #[test]
 fn only_an_official_apps_all_users_install_needs_the_publisher() {
     let official = CraftApp::by_id("photocraft").unwrap();

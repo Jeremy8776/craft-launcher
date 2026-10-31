@@ -1983,7 +1983,7 @@ pub mod windows {
 
     use super::{
         CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, elevated, explain, held, msi_command, msi_downgrade,
-        msi_folder_argument, msi_log, msi_scope_arguments, turn,
+        msi_folder_argument, msi_log, msi_path, msi_scope_arguments, turn,
     };
 
     /// `msiexec` in the system folder, asked of Windows. Never from `SystemRoot`: the elevated
@@ -1997,6 +1997,9 @@ pub mod windows {
     /// `scope`, from the copy being replaced's registration, keeps the update in the same
     /// Windows Installer context (see [`MsiScope`]).
     /// The package is held unchanged from its last check until `msiexec` exits (see [`held`]).
+    /// Its path is resolved first and only that path is used after: the downloads folder is the
+    /// person's own, so a link on the way could otherwise point elsewhere once the file is held.
+    /// A resolved path has no links, and no folder on it can be renamed while the file is held.
     pub fn run_msi(
         app: &CraftApp,
         msi: &Path,
@@ -2007,6 +2010,7 @@ pub mod windows {
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
         in_turn(stop, phase, JobPhase::Installing, || {
+            let msi = &msi_path(msi)?;
             let _held = held::hold(msi, sha256)?;
             held::check_publisher(app, msi, scope == Some(MsiScope::PerMachine))?;
             run_direct(msi, destination, scope)
@@ -2068,6 +2072,10 @@ pub mod windows {
         stop: &Stop,
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
+        // Resolved once, before anything is checked or held, as in [`run_msi`].
+        let (chosen_file, previous_file) = (msi_path(chosen.file)?, msi_path(previous.file)?);
+        let chosen = Package { file: &chosen_file, ..chosen };
+        let previous = Package { file: &previous_file, ..previous };
         if scope == Some(MsiScope::PerMachine) {
             // Asked before the prompt, so nobody gives permission for a downgrade that can't start.
             if crate::detect::windows::msi_installs(app).is_empty() {

@@ -55,3 +55,29 @@ fn load_from_system32_only() -> bool {
     // precondition, and failure is reported through its return value, which is checked.
     unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
 }
+
+#[cfg(test)]
+mod tests {
+    /// The lines of `header`'s table in `toml`.
+    fn table(toml: &str, header: &str) -> Vec<String> {
+        toml.lines()
+            .map(str::trim)
+            .skip_while(|line| *line != header)
+            .skip(1)
+            .take_while(|line| !line.is_empty() && !line.starts_with('['))
+            .map(String::from)
+            .collect()
+    }
+
+    /// This crate can't use `[lints] workspace = true` (see its Cargo.toml), so it keeps a copy.
+    #[test]
+    fn the_lints_are_the_workspaces_with_unsafe_code_denied_not_forbidden() {
+        let ours = include_str!("../Cargo.toml");
+        let workspace = include_str!("../../../Cargo.toml");
+        let clippy = table(ours, "[lints.clippy]");
+        assert!(!clippy.is_empty());
+        assert_eq!(clippy, table(workspace, "[workspace.lints.clippy]"));
+        assert_eq!(table(ours, "[lints.rust]"), ["unsafe_code = \"deny\""]);
+        assert_eq!(table(workspace, "[workspace.lints.rust]"), ["unsafe_code = \"forbid\""]);
+    }
+}

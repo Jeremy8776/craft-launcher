@@ -328,6 +328,33 @@ fn the_helper_is_only_ever_the_one_beside_the_launcher() {
     assert_eq!(helper_beside(&launcher).unwrap(), dir.path().join(HELPER));
 }
 
+#[cfg(windows)]
+#[test]
+fn an_unsigned_helper_is_never_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper = dir.path().join(HELPER);
+    std::fs::write(&helper, b"not a signed program").unwrap();
+    let error = checked_helper(&helper, &helper).unwrap_err();
+    assert!(error.contains("isn't signed") && error.contains("Nothing was changed"), "{error}");
+    let error = checked_helper(&helper, &dir.path().join("missing.exe")).unwrap_err();
+    assert!(error.contains("couldn't find the installer helper"), "{error}");
+}
+
+/// The helper is held while it starts: Windows must still run a program held this way.
+#[cfg(windows)]
+#[test]
+fn a_held_program_can_still_be_started_but_not_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join(HELPER);
+    std::fs::copy(super::super::windows::msiexec().with_file_name("hostname.exe"), &program).unwrap();
+    let held = open_unchangeable(&program).unwrap();
+    assert!(std::fs::OpenOptions::new().write(true).open(&program).is_err(), "changed while held");
+    assert!(std::fs::rename(&program, dir.path().join("moved.exe")).is_err(), "moved while held");
+    let ran = std::process::Command::new(&program).output().unwrap();
+    assert!(ran.status.success(), "{ran:?}");
+    drop(held);
+}
+
 #[test]
 fn a_community_app_is_refused_before_any_prompt() {
     let community = CraftApp::by_id("solidcraft").unwrap();

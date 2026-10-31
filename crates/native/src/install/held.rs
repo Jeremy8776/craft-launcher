@@ -36,19 +36,30 @@ fn needs_publisher(app: &CraftApp, all_users: bool) -> bool {
     all_users && app.kind == AppKind::Official
 }
 
-/// Checks `file`'s publisher when [`needs_publisher`] says so. A build of the launcher that isn't
-/// signed (a local build) has no publisher to compare with, so it only says so in the log.
+/// Checks `file`'s publisher when [`needs_publisher`] says so. A development build of the launcher
+/// isn't signed, so it has no publisher to compare with and only says so in the log. That is
+/// decided when it is built, never at run time: a release whose own signature can't be checked
+/// (damaged, or a revocation check that failed) refuses, as the elevated helper does.
 #[cfg(windows)]
 pub(super) fn check_publisher(app: &CraftApp, file: &Path, all_users: bool) -> Result<(), String> {
     if !needs_publisher(app, all_users) {
         return Ok(());
     }
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
-    if let Err(e) = verifysign::verify_file(&me) {
-        log::warn!("{}: this copy of ArtCraft Launcher isn't signed ({e}), so the package's publisher wasn't checked", app.name);
+    if skips_unsigned_self(cfg!(debug_assertions))
+        && let Err(e) = verifysign::verify_file(&me)
+    {
+        log::warn!("{}: this development build isn't signed ({e}), so the package's publisher wasn't checked", app.name);
         return Ok(());
     }
     super::elevated::signed_like(&me, file)
+}
+
+/// Whether a launcher that can't verify its own signature skips the publisher check: only a
+/// development build (`debug`, from `cfg!(debug_assertions)`). A separate function so a test can
+/// pin that a release build never does.
+const fn skips_unsigned_self(debug: bool) -> bool {
+    debug
 }
 
 #[cfg(test)]

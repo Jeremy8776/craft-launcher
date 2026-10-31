@@ -346,6 +346,24 @@ fn helper_beside(launcher: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// `helper` resolved, held so nobody can change, move or replace it, and checked to carry
+/// `launcher`'s publisher. It sits in the person's own launcher folder, which their programs can
+/// write, so without this the prompt would name whatever had been put there. Hold the returned
+/// file until the helper is running: Windows still starts a program held this way.
+///
+/// The limit: a program that can rewrite the launcher itself defeats any check the launcher makes,
+/// so the publisher the permission prompt shows stays the last gate until the helper lives in a
+/// folder only administrators can write.
+#[cfg(windows)]
+fn checked_helper(launcher: &Path, helper: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    let refused = |e: String| format!("{e}. Nothing was changed.");
+    let resolved =
+        dunce::canonicalize(helper).map_err(|e| refused(format!("couldn't find the installer helper ({e}). Reinstall ArtCraft Launcher")))?;
+    let held = open_unchangeable(&resolved).map_err(|e| refused(format!("couldn't read the installer helper ({e})")))?;
+    signed_like(launcher, &resolved).map_err(refused)?;
+    Ok((resolved, held))
+}
+
 /// Where a run's lock stands, as the launcher sees it.
 #[derive(Debug, PartialEq, Eq)]
 enum Lock {
@@ -394,7 +412,8 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
     let run = new_run()?;
     let parameters = parameters(&run, job)?;
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
-    let helper = helper_beside(&me)?;
+    // Held from its check until the helper has finished, so the prompt names the checked file.
+    let (helper, _held) = checked_helper(&me, &helper_beside(&me)?)?;
     log::info!("{app}: going back to {} under one permission prompt", job.chosen.version);
     let asked = ShellExecuteEx(&SHELLEXECUTEINFO {
         mask: co::SEE_MASK::NOASYNC | co::SEE_MASK::FLAG_NO_UI,
@@ -448,6 +467,10 @@ pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<()
         Ok(lock) => lock,
         Err(e) => return Some(Err(format!("couldn't create the installer helper's lock ({e})"))),
     };
+    // Every account on the machine may read this folder (Program Files), so the logs here,
+    // msiexec's verbose ones included, show this person's folders and installer properties to
+    // other users of the machine. Accepted for a diagnostic folder that holds no secrets: making
+    // it private would need the person's account, and the helper may run as another one.
     log_to(&dir);
     log::info!("installer helper: {} from {} to {}", job.app, job.previous.version, job.chosen.version);
     let done = downgrade(&dir, &job);
