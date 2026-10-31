@@ -1981,8 +1981,11 @@ pub mod windows {
         msi_log, msi_scope_arguments, process, turn,
     };
 
-    fn msiexec() -> PathBuf {
-        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join(r"System32\msiexec.exe")
+    /// `msiexec` in the system folder, asked of Windows. Never from `SystemRoot`: the elevated
+    /// helper runs this, and an elevated program's environment takes the person's own variables,
+    /// which any program of theirs can set.
+    pub(super) fn msiexec() -> PathBuf {
+        winsafe::GetSystemDirectory().map_or_else(|_| PathBuf::from(r"C:\Windows\System32"), PathBuf::from).join("msiexec.exe")
     }
 
     /// Runs an MSI with a progress window and no restart. Windows asks for permission itself.
@@ -2113,6 +2116,15 @@ pub mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The elevated helper's `msiexec` is the real one in the system folder Windows names.
+    #[cfg(windows)]
+    #[test]
+    fn msiexec_is_the_one_in_the_system_folder() {
+        let system = PathBuf::from(winsafe::GetSystemDirectory().unwrap());
+        assert_eq!(windows::msiexec(), system.join("msiexec.exe"));
+        assert!(windows::msiexec().is_file());
+    }
 
     /// A folder found only by the launch fallback, in another scope, never reaches the installer.
     #[cfg(windows)]
