@@ -9,6 +9,7 @@ const LAUNCHER_UPGRADE: &str = "{1AC08DBF-D4CF-4BA4-A81E-CAA5C1004974}";
 /// Facts a test chooses: the root a signature chains to, and the package's UpgradeCode.
 struct Facts {
     root: Result<String, String>,
+    revocation: Result<(), String>,
     upgrade: Result<String, String>,
 }
 
@@ -16,13 +17,16 @@ impl PackageFacts for Facts {
     fn signing_root(&self, _: &Path) -> Result<String, String> {
         self.root.clone()
     }
+    fn check_revocation(&self, _: &Path) -> Result<(), String> {
+        self.revocation.clone()
+    }
     fn upgrade_code(&self, _: &Path) -> Result<String, String> {
         self.upgrade.clone()
     }
 }
 
 fn facts(root: &str, upgrade: &str) -> Facts {
-    Facts { root: Ok(root.into()), upgrade: Ok(upgrade.into()) }
+    Facts { root: Ok(root.into()), revocation: Ok(()), upgrade: Ok(upgrade.into()) }
 }
 
 /// Windows Installer links GridCraft's UpgradeCode to its installed product, nothing else.
@@ -47,11 +51,24 @@ fn a_package_signed_through_the_pinned_root_for_the_installed_product_is_accepte
 #[test]
 fn any_other_signing_root_is_refused_before_the_product_is_read() {
     let other = "a".repeat(64);
-    let read = Facts { root: Ok(other), upgrade: Err("must not be read".into()) };
+    let read = Facts { root: Ok(other), revocation: Err("must not check an untrusted root".into()), upgrade: Err("must not be read".into()) };
     let error = run(&read, &[GRIDCRAFT_PRODUCT]).unwrap_err();
     assert!(error.contains("isn't signed through the certificate service"), "{error}");
-    let unverified = Facts { root: Err("not signed".into()), upgrade: Ok(GRIDCRAFT_UPGRADE.into()) };
+    let unverified = Facts { root: Err("not signed".into()), revocation: Ok(()), upgrade: Ok(GRIDCRAFT_UPGRADE.into()) };
     assert_eq!(run(&unverified, &[GRIDCRAFT_PRODUCT]), Err("not signed".into()));
+}
+
+/// This is the admission path used even when someone starts the helper without the launcher.
+/// A trusted root and matching product cannot bypass a cached revocation refusal. The unreadable
+/// UpgradeCode also proves that nothing after this refusal is attempted.
+#[test]
+fn direct_helper_admission_refuses_revocation_before_reading_the_product() {
+    let revoked = Facts {
+        root: Ok(SIGNING_ROOT_SHA256.into()),
+        revocation: Err("cached signing certificate was revoked".into()),
+        upgrade: Err("must not be read".into()),
+    };
+    assert_eq!(run(&revoked, &[GRIDCRAFT_PRODUCT]), Err("cached signing certificate was revoked".into()));
 }
 
 /// Another package our publisher signed, such as the launcher's own (the sandbox run's T9).

@@ -1,7 +1,7 @@
 //! Which packages the elevated helper may install: ours, and the app it replaces.
 //!
-//! Two facts decide it, read by the helper through Windows APIs that this crate can't call (it
-//! forbids `unsafe`), so the helper supplies them as [`PackageFacts`]:
+//! The helper supplies two identity facts and an independent cached revocation check through
+//! [`PackageFacts`]. Its Windows APIs live outside this crate, which forbids `unsafe`:
 //! - **The signing root.** Windows trusts any root the person's own account added, and the helper
 //!   runs as that account, so a matching subject and issuer name prove nothing alone: a program of
 //!   theirs could add its own root, issue itself our publisher's name, and have our helper install
@@ -28,6 +28,9 @@ pub trait PackageFacts {
     /// SHA-256 (lower-case hex) of the root certificate of the chain Windows built while verifying
     /// `file`'s signature. An error when the signature doesn't verify.
     fn signing_root(&self, file: &Path) -> Result<String, String>;
+    /// Reject a known-revoked signing certificate using only Windows' cache. Required on every
+    /// provider: a caller starting the helper directly cannot be trusted to have checked it.
+    fn check_revocation(&self, file: &Path) -> Result<(), String>;
     /// `file`'s `UpgradeCode` property, as written in the package.
     fn upgrade_code(&self, file: &Path) -> Result<String, String>;
 }
@@ -41,6 +44,8 @@ pub(super) fn check(facts: &dyn PackageFacts, file: &Path, app: &str, removed: &
     if !root.eq_ignore_ascii_case(SIGNING_ROOT_SHA256) {
         return Err(format!("{shown} isn't signed through the certificate service ArtCraft's packages use, so nothing was changed"));
     }
+    // This decision is inside the helper's admission path, not only before its prompt.
+    facts.check_revocation(file)?;
     let upgrade = facts.upgrade_code(file)?;
     let theirs = |product: &String| crate::msi_context::valid_product_code(&upgrade) && linked(&upgrade, product);
     if removed.is_empty() || !removed.iter().all(theirs) {

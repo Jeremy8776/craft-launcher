@@ -1,8 +1,8 @@
-//! The two facts the installer helper reads about a staged package through Windows itself, for
-//! `install::identity`: the root of the chain Windows built for its signature, and its
-//! UpgradeCode. Neither has a safe wrapper (`verifysign` exposes only the signer's own certificate,
-//! and `winsafe` has no Windows Installer API), and the launcher's other crates forbid `unsafe`,
-//! so these calls live here, in the only crate that allows reviewed `unsafe`.
+//! The installer helper's package checks for `install::identity`: the signing root, cached
+//! revocation, and UpgradeCode. The root and UpgradeCode have no safe wrapper (`verifysign`
+//! exposes only the signer's own certificate, and `winsafe` has no Windows Installer API), so
+//! their Windows calls live here, in the only crate that allows reviewed `unsafe`. Cached
+//! revocation delegates to the shared, safe verification policy in the native crate.
 //!
 //! Each call's result is checked, every pointer is null-checked before it is read, and every
 //! handle is closed by a guard, on every path. Nothing here decides what is allowed: that is
@@ -22,6 +22,10 @@ impl PackageFacts for WindowsFacts {
         signing_root(file).map_err(|e| format!("couldn't check the signature of {} ({e})", file.display()))
     }
 
+    fn check_revocation(&self, file: &Path) -> Result<(), String> {
+        artcraft_launcher_native::install::revocation::check_cached(file)
+    }
+
     fn upgrade_code(&self, file: &Path) -> Result<String, String> {
         upgrade_code(file).map_err(|e| format!("couldn't read which app {} is ({e})", file.display()))
     }
@@ -36,18 +40,13 @@ fn wide(path: &Path) -> Vec<u16> {
 /// MD2 and MD4 refused), keeps the state, and hashes the root certificate of the chain WinTrust
 /// built. The state is closed however this returns.
 ///
-/// shortcut: revocation isn't checked, so a package signed with a Learning Machines certificate
-/// that was later revoked still passes. Expiry does not limit this: the packages carry RFC 3161
-/// timestamps, so a signature made while its certificate was valid stays valid after the
-/// certificate expires, and revocation is the only way to withdraw it. The unelevated launcher
-/// checks revocation before the prompt (`install::revocation`); not here, because that would mean
-/// network access from this elevated process. A launcher bypassed by a program running as the
-/// person skips that check, and this one would then accept a revoked package.
+/// Chain building is cache-only: `WTD_REVOKE_NONE` alone does not prevent network retrieval.
+/// Revocation is checked independently by `WindowsFacts::check_revocation`, also cache-only, in
+/// `identity::check` before any product is removed. A direct invocation cannot skip that guard.
 #[allow(unsafe_code)]
 fn signing_root(file: &Path) -> Result<String, String> {
     use windows_sys::Win32::Security::WinTrust::{
-        WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO, WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4, WTD_REVOKE_NONE,
-        WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTD_UICONTEXT_EXECUTE, WTHelperGetProvSignerFromChain,
+        WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_FILE_INFO, WTD_STATEACTION_CLOSE, WTHelperGetProvSignerFromChain,
         WTHelperProvDataFromStateData, WinVerifyTrust,
     };
 
@@ -69,17 +68,7 @@ fn signing_root(file: &Path) -> Result<String, String> {
         hFile: std::ptr::null_mut(),
         pgKnownSubject: std::ptr::null_mut(),
     };
-    let mut data = WINTRUST_DATA {
-        cbStruct: size_of::<WINTRUST_DATA>() as u32,
-        dwUIChoice: WTD_UI_NONE,
-        fdwRevocationChecks: WTD_REVOKE_NONE,
-        dwUnionChoice: WTD_CHOICE_FILE,
-        Anonymous: WINTRUST_DATA_0 { pFile: &raw mut info },
-        dwStateAction: WTD_STATEACTION_VERIFY,
-        dwProvFlags: WTD_DISABLE_MD2_MD4,
-        dwUIContext: WTD_UICONTEXT_EXECUTE,
-        ..Default::default()
-    };
+    let mut data = signature_data(&mut info);
     let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // SAFETY: `data` and `info` point at live locals (`path` outlives the call), sized as WinTrust
     // expects; no window handle. The state it opens is closed by `State` below.
@@ -113,6 +102,26 @@ fn signing_root(file: &Path) -> Result<String, String> {
         }
         let encoded = std::slice::from_raw_parts(cert.pbCertEncoded, cert.cbCertEncoded as usize);
         Ok(Sha256::digest(encoded).iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
+/// The exact WinTrust settings used for the helper's signature/root check. Network retrieval is
+/// forbidden even with an empty certificate cache, not merely avoided on a warm test machine.
+fn signature_data(info: &mut windows_sys::Win32::Security::WinTrust::WINTRUST_FILE_INFO) -> windows_sys::Win32::Security::WinTrust::WINTRUST_DATA {
+    use windows_sys::Win32::Security::WinTrust::{
+        WINTRUST_DATA, WINTRUST_DATA_0, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_DISABLE_MD2_MD4, WTD_REVOKE_NONE, WTD_STATEACTION_VERIFY,
+        WTD_UI_NONE, WTD_UICONTEXT_EXECUTE,
+    };
+    WINTRUST_DATA {
+        cbStruct: size_of::<WINTRUST_DATA>() as u32,
+        dwUIChoice: WTD_UI_NONE,
+        fdwRevocationChecks: WTD_REVOKE_NONE,
+        dwUnionChoice: WTD_CHOICE_FILE,
+        Anonymous: WINTRUST_DATA_0 { pFile: info },
+        dwStateAction: WTD_STATEACTION_VERIFY,
+        dwProvFlags: WTD_DISABLE_MD2_MD4 | WTD_CACHE_ONLY_URL_RETRIEVAL,
+        dwUIContext: WTD_UICONTEXT_EXECUTE,
+        ..Default::default()
     }
 }
 
@@ -176,12 +185,23 @@ fn upgrade_code(file: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn helper_signature_verification_cannot_fetch_over_the_network() {
+        use windows_sys::Win32::Security::WinTrust::{WINTRUST_FILE_INFO, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_DISABLE_MD2_MD4, WTD_UI_NONE};
+        let mut info = WINTRUST_FILE_INFO::default();
+        let data = signature_data(&mut info);
+        assert_ne!(data.dwProvFlags & WTD_CACHE_ONLY_URL_RETRIEVAL, 0);
+        assert_ne!(data.dwProvFlags & WTD_DISABLE_MD2_MD4, 0);
+        assert_eq!(data.dwUIChoice, WTD_UI_NONE);
+    }
+
     /// A file with no signature fails, rather than giving some root.
     #[test]
     fn an_unsigned_file_has_no_signing_root() {
         let file = std::env::temp_dir().join(format!("artcraft-helper-unsigned-{}.msi", std::process::id()));
         let _ = std::fs::write(&file, b"not a package");
         assert!(signing_root(&file).is_err());
+        assert!(WindowsFacts.check_revocation(&file).is_err(), "the provider must actually verify the cached signature");
         assert!(upgrade_code(&file).is_err(), "not a Windows Installer database");
         let _ = std::fs::remove_file(&file);
     }
@@ -194,6 +214,7 @@ mod tests {
         let file = std::path::PathBuf::from(std::env::var_os("ARTCRAFT_HELPER_REAL_MSI").unwrap_or_default());
         let upgrade = std::env::var("ARTCRAFT_HELPER_REAL_UPGRADE").unwrap_or_default();
         assert_eq!(signing_root(&file).as_deref(), Ok(artcraft_launcher_native::install::identity::SIGNING_ROOT_SHA256));
+        assert_eq!(WindowsFacts.check_revocation(&file), Ok(()));
         assert_eq!(upgrade_code(&file).map(|u| u.to_ascii_uppercase()), Ok(upgrade.to_ascii_uppercase()));
     }
 }

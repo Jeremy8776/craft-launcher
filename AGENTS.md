@@ -108,8 +108,12 @@ redundant. Removing or "simplifying" one reopens it, so change them only with th
 - **The unelevated launcher refuses a package whose signing certificate was revoked**
   (`revocation::check`, from `held::check_publisher`), before an all-users install and before a
   downgrade's prompt. Expiry is no substitute: the packages are timestamped, so a signature stays
-  valid after its certificate expires. Not in the helper, which must make no network calls. An
-  unanswerable check (offline) continues with a warning; that is a stated `shortcut:`.
+  valid after its certificate expires. The helper repeats that decision against Windows' cache
+  through required `PackageFacts::check_revocation`, before reading the product or removing it,
+  so starting the helper directly cannot bypass a known revocation. Every helper trust check is
+  cache-only (`WTD_CACHE_ONLY_URL_RETRIEVAL` for the raw WinTrust root check); skipping revocation
+  alone does not prevent network retrieval. An unanswerable check (offline) continues with a
+  warning; that is a stated `shortcut:`, not a promise of fresh revocation information.
 - **The helper installs a package only for the app it replaces:** Windows Installer's HKLM
   registration must link the package's UpgradeCode to every product being removed
   (`identity::check`). Our publisher signs every Craft app and the launcher, so the signature alone
