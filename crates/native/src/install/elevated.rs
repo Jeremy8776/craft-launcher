@@ -168,7 +168,7 @@ fn checked_folder<'a>(folder: Option<&'a Path>, registered: &[PathBuf], app: &st
 }
 
 /// Opens `file` so nobody can change, move or delete it while it is open: others may only read.
-fn open_unchangeable(file: &Path) -> std::io::Result<std::fs::File> {
+pub(super) fn open_unchangeable(file: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -181,7 +181,7 @@ fn open_unchangeable(file: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// Reads `source` to the end into `copy` (if any), and returns the SHA-256 of what was read.
-fn hash_through(source: &mut std::fs::File, mut copy: Option<&mut std::fs::File>) -> std::io::Result<String> {
+pub(super) fn hash_through(source: &mut std::fs::File, mut copy: Option<&mut std::fs::File>) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
     loop {
@@ -297,7 +297,7 @@ fn same_publisher(ours: &Signer, theirs: &Signer) -> bool {
 /// Whether `file` is signed by the same publisher as `reference` (this program). Windows checks
 /// the signature and its chain to a trusted root first.
 #[cfg(windows)]
-fn signed_like(reference: &Path, file: &Path) -> Result<(), String> {
+pub(super) fn signed_like(reference: &Path, file: &Path) -> Result<(), String> {
     let signer = |path: &Path| verifysign::verify_file(path).map(|s| Signer { subject: s.subject_name(), issuer: s.issuer_name() });
     let ours = signer(reference).map_err(|e| format!("this copy of ArtCraft Launcher isn't signed ({e}), so it can't install for all users"))?;
     let theirs = signer(file).map_err(|e| format!("{} isn't signed ({e})", file.display()))?;

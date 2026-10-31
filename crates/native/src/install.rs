@@ -191,7 +191,7 @@ pub fn install_at(
                     job.stop,
                     &mut *job.phase,
                 ),
-                None => windows::run_msi(&file, destination.as_deref(), msi_scope, job.stop, &mut *job.phase),
+                None => windows::run_msi(app, &file, &sha256, destination.as_deref(), msi_scope, job.stop, &mut *job.phase),
             }
             .map(|_| None)
         }
@@ -1933,6 +1933,10 @@ mod msi_downgrade;
 #[cfg(any(windows, test))]
 pub mod elevated;
 
+/// A downloaded package held unchanged from its last check until `msiexec` is done with it.
+#[cfg(any(windows, test))]
+mod held;
+
 /// `path` as text that can sit inside quotes on a Windows command line.
 #[cfg(any(windows, test))]
 fn windows_text(path: &Path) -> Result<&str, String> {
@@ -1978,8 +1982,8 @@ pub mod windows {
     use artcraft_launcher_core::protocol::CANCELLED;
 
     use super::{
-        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, elevated, explain, msi_command, msi_downgrade, msi_folder_argument,
-        msi_log, msi_scope_arguments, turn,
+        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, elevated, explain, held, msi_command, msi_downgrade,
+        msi_folder_argument, msi_log, msi_scope_arguments, turn,
     };
 
     /// `msiexec` in the system folder, asked of Windows. Never from `SystemRoot`: the elevated
@@ -1992,14 +1996,21 @@ pub mod windows {
     /// Runs an MSI with a progress window and no restart. Windows asks for permission itself.
     /// `scope`, from the copy being replaced's registration, keeps the update in the same
     /// Windows Installer context (see [`MsiScope`]).
+    /// The package is held unchanged from its last check until `msiexec` exits (see [`held`]).
     pub fn run_msi(
+        app: &CraftApp,
         msi: &Path,
+        sha256: &str,
         destination: Option<&Path>,
         scope: Option<MsiScope>,
         stop: &Stop,
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
-        in_turn(stop, phase, JobPhase::Installing, || run_direct(msi, destination, scope))
+        in_turn(stop, phase, JobPhase::Installing, || {
+            let _held = held::hold(msi, sha256)?;
+            held::check_publisher(app, msi, scope == Some(MsiScope::PerMachine))?;
+            run_direct(msi, destination, scope)
+        })
     }
 
     /// Runs one MSI by itself: `msiexec` asks for permission itself, and the prompt names the package's
@@ -2077,6 +2088,8 @@ pub mod windows {
         // One turn for all three steps: once the copy is removed, nothing waiting in the queue
         // (another install, or a cancel while waiting) can stop the put-back.
         in_turn(stop, phase, JobPhase::Installing, || {
+            // Both held unchanged from their last check until the last step is done.
+            let _held = (held::hold(chosen.file, chosen.sha256)?, held::hold(previous.file, previous.sha256)?);
             msi_downgrade::run(msi_downgrade::Steps {
                 app: app.name,
                 chosen: chosen.version,
