@@ -6,8 +6,6 @@
 //! Kept apart from the launcher's own logger, which brings env_logger and log rotation that a
 //! single short run doesn't need.
 
-#![cfg_attr(not(windows), allow(dead_code))]
-
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
