@@ -47,8 +47,10 @@ const RESULT: &str = "result";
 /// The packages' names in the run folder; `msiexec` writes its log beside each.
 const CHOSEN: &str = "chosen.msi";
 const PREVIOUS: &str = "previous.msi";
+/// The helper's own log, so a run stopped part way (by antivirus, say) still says how far it got.
+pub const LOG: &str = "artcraft-launcher.log";
 /// Every name a run folder can hold, so an old one is cleared file by file, never recursively.
-const RUN_FILES: [&str; 6] = [LOCK, RESULT, CHOSEN, PREVIOUS, "chosen.log", "previous.log"];
+const RUN_FILES: [&str; 7] = [LOCK, RESULT, CHOSEN, PREVIOUS, "chosen.log", "previous.log", LOG];
 
 /// One downloaded package: where it is, the checksum it was checked against, and its version.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,13 +277,31 @@ fn real_folders(base: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `file` is signed by the same publisher as `reference` (this program).
+/// A signature's publisher: the leaf certificate's subject, and its issuer.
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+struct Signer {
+    subject: verifysign::Name,
+    issuer: verifysign::Name,
+}
+
+/// Whether `theirs` is the same publisher as `ours`: the same subject, issued by the same
+/// organisation. Not the same certificate or issuing CA: the packages are signed through
+/// Microsoft's Trusted Signing, whose certificates last days and whose issuing CA changes
+/// (`Microsoft ID Verified CS AOC CA 03`, `CA 04`), so a pin on either would refuse real releases.
+#[cfg(windows)]
+fn same_publisher(ours: &Signer, theirs: &Signer) -> bool {
+    ours.subject == theirs.subject && ours.issuer.organization.is_some() && ours.issuer.organization == theirs.issuer.organization
+}
+
+/// Whether `file` is signed by the same publisher as `reference` (this program). Windows checks
+/// the signature and its chain to a trusted root first.
 #[cfg(windows)]
 fn signed_like(reference: &Path, file: &Path) -> Result<(), String> {
-    let publisher = |path: &Path| verifysign::verify_file(path).map(|signature| signature.subject_name());
-    let ours = publisher(reference).map_err(|e| format!("this copy of ArtCraft Launcher isn't signed ({e}), so it can't install for all users"))?;
-    let theirs = publisher(file).map_err(|e| format!("{} isn't signed ({e})", file.display()))?;
-    if ours == theirs { Ok(()) } else { Err(format!("{} isn't signed by ArtCraft Launcher's publisher", file.display())) }
+    let signer = |path: &Path| verifysign::verify_file(path).map(|s| Signer { subject: s.subject_name(), issuer: s.issuer_name() });
+    let ours = signer(reference).map_err(|e| format!("this copy of ArtCraft Launcher isn't signed ({e}), so it can't install for all users"))?;
+    let theirs = signer(file).map_err(|e| format!("{} isn't signed ({e})", file.display()))?;
+    if same_publisher(&ours, &theirs) { Ok(()) } else { Err(format!("{} isn't signed by ArtCraft Launcher's publisher", file.display())) }
 }
 
 /// `Program Files\ArtCraft\Launcher installer runs`, with Program Files from Windows rather than
@@ -344,6 +364,13 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
 
     let run = new_run()?;
     let parameters = parameters(&run, job)?;
+    // shortcut: this program lives in the person's own Programs folder (the launcher installs per
+    // user), which their programs can write. Its own imports come only from System32 (build.rs), but
+    // DLLs that system DLLs load later still look in this folder first: a planted `msasn1.dll`,
+    // which crypt32 loads during the signature check, was loaded in a test on Windows 11. Closing
+    // that needs `SetDefaultDllDirectories` before anything else runs (no safe wrapper exists, and
+    // `unsafe` is forbidden here) or a helper in a folder only administrators can write. Decide
+    // before release.
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
     log::info!("{app}: going back to {} under one permission prompt", job.chosen.version);
     let asked = ShellExecuteEx(&SHELLEXECUTEINFO {
@@ -367,9 +394,10 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
 }
 
 /// The elevated copy's work, when this program was started with [`FLAG`]; `args` are its arguments
-/// without the program name. `None` otherwise.
+/// without the program name. `None` otherwise. `log_to` is given the run folder as soon as it
+/// exists, for the log ([`LOG`]).
 #[cfg(windows)]
-pub fn finish(args: &[OsString]) -> Option<Result<(), String>> {
+pub fn finish(args: &[OsString], log_to: impl FnOnce(&Path)) -> Option<Result<(), String>> {
     use std::os::windows::fs::OpenOptionsExt;
 
     let (run, job) = match parse_args(args)? {
@@ -397,7 +425,13 @@ pub fn finish(args: &[OsString]) -> Option<Result<(), String>> {
         Ok(lock) => lock,
         Err(e) => return Some(Err(format!("couldn't create the installer helper's lock ({e})"))),
     };
+    log_to(&dir);
+    log::info!("installer helper: {} from {} to {}", job.app, job.previous.version, job.chosen.version);
     let done = downgrade(&dir, &job);
+    match &done {
+        Ok(()) => log::info!("installer helper: done"),
+        Err(e) => log::warn!("installer helper: {e}"),
+    }
     if let Err(e) = write_result(&dir, &done) {
         log::warn!("couldn't record the installer helper's result ({e})");
     }
@@ -427,7 +461,9 @@ fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
         app: app.name,
         chosen: &job.chosen.version,
         previous: &job.previous.version,
-        remove: &mut || windows::remove_registrations(app),
+        // Only the machine's registrations: an elevated `msiexec /x` must never take a product
+        // code from HKCU, which the person's own programs can write.
+        remove: &mut || windows::remove_registrations(app, scope),
         install_chosen: &mut || windows::run_direct(&chosen, folder, scope),
         reinstall_previous: &mut || windows::run_direct(&previous, folder, scope),
     });

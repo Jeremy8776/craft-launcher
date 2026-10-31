@@ -44,10 +44,12 @@ fn main() -> ExitCode {
     }
     // An elevated copy of the launcher doing all-users Windows Installer work behind one prompt.
     #[cfg(windows)]
-    if let Some(done) = artcraft_launcher_native::install::elevated::finish(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
-        if let Err(e) = &done {
-            log::warn!("installer helper: {e}");
+    if let Some(done) = artcraft_launcher_native::install::elevated::finish(&std::env::args_os().skip(1).collect::<Vec<_>>(), |dir| {
+        // Into the run folder, which only administrators can change, not the person's log folder.
+        if let Some(logs) = &logs {
+            let _ = logs.attach_dir(dir);
         }
+    }) {
         return if done.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE };
     }
     // Detect system language in the background so the first frame can use it.

@@ -1947,7 +1947,8 @@ fn windows_text(path: &Path) -> Result<&str, String> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn msi_command(program: &Path, msi: &Path) -> Result<std::process::Command, String> {
     let msi = msi_path(msi)?;
-    let mut command = process::command(program);
+    // Not `process::command`: `msiexec` shows its own window, and nothing here hides one.
+    let mut command = std::process::Command::new(program);
     // A verbose log beside the package: Windows Installer's own errors (1603 above all) say
     // nothing without it.
     command.arg("/i").arg(&msi).args(["/passive", "/norestart", "/l*v"]).arg(msi_log(&msi));
@@ -1978,7 +1979,7 @@ pub mod windows {
 
     use super::{
         CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, elevated, explain, msi_command, msi_downgrade, msi_folder_argument,
-        msi_log, msi_scope_arguments, process, turn,
+        msi_log, msi_scope_arguments, turn,
     };
 
     /// `msiexec` in the system folder, asked of Windows. Never from `SystemRoot`: the elevated
@@ -2080,7 +2081,7 @@ pub mod windows {
                 app: app.name,
                 chosen: chosen.version,
                 previous: previous.version,
-                remove: &mut || remove_registrations(app),
+                remove: &mut || remove_registrations(app, None),
                 install_chosen: &mut || run_direct(chosen.file, destination, scope),
                 reinstall_previous: &mut || run_direct(previous.file, destination, scope),
             })
@@ -2088,19 +2089,27 @@ pub mod windows {
     }
 
     pub fn uninstall_msi(app: &CraftApp, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
-        in_turn(stop, phase, JobPhase::Removing, || remove_registrations(app).map_err(|removal| removal.error))
+        in_turn(stop, phase, JobPhase::Removing, || remove_registrations(app, None).map_err(|removal| removal.error))
     }
 
-    /// Removes every Windows Installer registration of `app` in turn, within the caller's queue
-    /// turn. A failure says whether an earlier registration was already removed, so a downgrade
-    /// knows the app is partly gone.
-    pub(super) fn remove_registrations(app: &CraftApp) -> Result<(), msi_downgrade::Removal> {
-        let installs = crate::detect::windows::msi_installs(app);
+    /// The registrations to remove: all of them, or only those in the `only` context. The elevated
+    /// helper passes the machine's: a per-user uninstall record lives in HKCU, which any program of
+    /// the person's can write, so its product code could name any product on the machine.
+    pub(super) fn removable(installs: Vec<crate::detect::windows::MsiInstall>, only: Option<MsiScope>) -> Vec<crate::detect::windows::MsiInstall> {
+        installs.into_iter().filter(|m| only.is_none_or(|scope| m.scope == scope)).collect()
+    }
+
+    /// Removes every Windows Installer registration of `app` (in the `only` context, if given) in
+    /// turn, within the caller's queue turn. A failure says whether an earlier registration was
+    /// already removed, so a downgrade knows the app is partly gone.
+    pub(super) fn remove_registrations(app: &CraftApp, only: Option<MsiScope>) -> Result<(), msi_downgrade::Removal> {
+        let installs = removable(crate::detect::windows::msi_installs(app), only);
         if installs.is_empty() {
             return Err(msi_downgrade::Removal { error: format!("{} isn't registered with the Windows Installer", app.name), partly: false });
         }
         for (removed, m) in installs.iter().enumerate() {
-            let status = process::command(msiexec())
+            // `msiexec` shows its own window; nothing here hides one.
+            let status = std::process::Command::new(msiexec())
                 .args(["/x", &m.product_code, "/passive", "/norestart"])
                 .status()
                 .map_err(|e| format!("couldn't start the Windows Installer ({e})"))
@@ -2116,6 +2125,19 @@ pub mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The elevated helper removes only the machine's registrations: a per-user record (HKCU) can
+    /// carry any product code, and must never reach an elevated `msiexec /x`.
+    #[cfg(windows)]
+    #[test]
+    fn the_elevated_removal_never_takes_a_per_user_record() {
+        let install = |code: &str, scope| crate::detect::windows::MsiInstall { product_code: code.into(), version: None, exe: None, scope };
+        let all = || vec![install("{machine}", MsiScope::PerMachine), install("{planted}", MsiScope::PerUser)];
+        let codes = |list: Vec<crate::detect::windows::MsiInstall>| list.into_iter().map(|m| m.product_code).collect::<Vec<_>>();
+        assert_eq!(codes(windows::removable(all(), Some(MsiScope::PerMachine))), ["{machine}"]);
+        assert_eq!(codes(windows::removable(all(), Some(MsiScope::PerUser))), ["{planted}"]);
+        assert_eq!(codes(windows::removable(all(), None)), ["{machine}", "{planted}"]);
+    }
 
     /// The elevated helper's `msiexec` is the real one in the system folder Windows names.
     #[cfg(windows)]

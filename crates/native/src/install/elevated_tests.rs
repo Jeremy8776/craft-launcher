@@ -288,3 +288,18 @@ fn a_link_in_place_of_the_runs_folder_is_refused() {
     }
     assert!(real_folders(&link).is_err());
 }
+
+#[cfg(windows)]
+#[test]
+fn a_package_must_share_the_subject_and_the_issuing_organisation() {
+    let name = |cn: &str, o: Option<&str>| verifysign::Name { common_name: Some(cn.into()), organization: o.map(Into::into), ..Default::default() };
+    let signer = |subject: &str, ca: &str, ca_org: Option<&str>| Signer { subject: name(subject, Some(subject)), issuer: name(ca, ca_org) };
+    let ours = signer("Learning Machines Inc", "Microsoft ID Verified CS AOC CA 04", Some("Microsoft Corporation"));
+
+    // Trusted Signing rotates the issuing CA between releases: still our publisher.
+    assert!(same_publisher(&ours, &signer("Learning Machines Inc", "Microsoft ID Verified CS AOC CA 03", Some("Microsoft Corporation"))));
+    assert!(!same_publisher(&ours, &signer("Someone Else", "Microsoft ID Verified CS AOC CA 04", Some("Microsoft Corporation"))), "another subject");
+    assert!(!same_publisher(&ours, &signer("Learning Machines Inc", "Other CA", Some("Other Trust Services"))), "our name from another authority");
+    let nameless = signer("Learning Machines Inc", "Self", None);
+    assert!(!same_publisher(&nameless, &nameless), "an issuer with no organisation proves nothing");
+}
