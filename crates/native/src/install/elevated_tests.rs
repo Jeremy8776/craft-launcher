@@ -124,7 +124,9 @@ fn only_the_flag_starts_the_helper_and_a_bad_job_is_refused() {
 #[test]
 fn an_install_folder_must_be_one_the_app_is_registered_in_for_all_users() {
     let registered = [PathBuf::from(r"C:\Program Files\ArtCraft\FilmCraft"), PathBuf::from(r"D:\Apps\FilmCraft")];
-    assert_eq!(checked_folder(None, &registered, "FilmCraft"), Ok(None), "no folder means the package's own");
+    // No folder would let msiexec take the package's default and move a chosen folder.
+    assert_eq!(checked_folder(None, &registered, "FilmCraft"), Err(no_folder("FilmCraft")));
+    assert_eq!(checked_folder(None, &[], "FilmCraft"), Err(no_folder("FilmCraft")));
     let same = Path::new(r"c:\program files\artcraft\filmcraft\");
     assert_eq!(checked_folder(Some(same), &registered, "FilmCraft"), Ok(Some(same)));
     for elsewhere in [r"C:\Windows\System32", r"C:\Program Files\ArtCraft\FilmCraft\sub", r"C:\Program Files\ArtCraft"] {

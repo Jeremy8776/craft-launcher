@@ -2084,6 +2084,10 @@ pub mod windows {
             if let Some(refused) = elevated::refusal(app) {
                 return Err(refused);
             }
+            // The helper refuses this too; asking first spares a prompt for nothing.
+            if destination.is_none() {
+                return Err(elevated::no_folder(app.name));
+            }
             // The helper checks both again itself; this only spares a prompt for packages it would refuse.
             held::check_publisher(app, chosen.file, true)?;
             held::check_publisher(app, previous.file, true)?;
@@ -2108,7 +2112,9 @@ pub mod windows {
                 app: app.name,
                 chosen: chosen.version,
                 previous: previous.version,
-                remove: &mut || remove_registrations(app, None),
+                // Only the copy's own context: a per-machine registration of another product
+                // code must not be removed by a per-user downgrade.
+                remove: &mut || remove_registrations(app, scope),
                 install_chosen: &mut || run_direct(chosen.file, destination, scope),
                 reinstall_previous: &mut || run_direct(previous.file, destination, scope),
             })

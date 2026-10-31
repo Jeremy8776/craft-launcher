@@ -162,14 +162,20 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     text(a).eq_ignore_ascii_case(&text(b))
 }
 
-/// The install folder the helper will use: none (the package's own), or one of the
-/// `registered` all-users folders, never a folder the caller made up.
+/// The install folder the helper will use: one of the `registered` all-users folders, never a
+/// folder the caller made up. No folder is refused: `msiexec` would use the package's default,
+/// which moves a copy from a folder the person chose.
 fn checked_folder<'a>(folder: Option<&'a Path>, registered: &[PathBuf], app: &str) -> Result<Option<&'a Path>, String> {
     match folder {
-        None => Ok(None),
+        None => Err(no_folder(app)),
         Some(folder) if registered.iter().any(|r| same_folder(r, folder)) => Ok(Some(folder)),
         Some(folder) => Err(format!("{} isn't where {app} is installed for all users, so nothing was changed", folder.display())),
     }
+}
+
+/// Why a downgrade with no known all-users folder is refused, before the prompt and in the helper.
+pub(super) fn no_folder(app: &str) -> String {
+    format!("Windows doesn't say where {app} is installed for all users, so nothing was changed")
 }
 
 /// Opens `file` so nobody can change, move or delete it while it is open: others may only read.
