@@ -97,7 +97,7 @@ fn packed_code(code: &str) -> Option<String> {
         return None;
     }
     let hex: Vec<char> = code.chars().filter(char::is_ascii_hexdigit).map(|c| c.to_ascii_uppercase()).collect();
-    let (groups, rest) = hex.split_at(16);
+    let (groups, rest) = hex.split_at_checked(16)?;
     let mut packed = String::with_capacity(32);
     for range in [0..8, 8..12, 12..16] {
         packed.extend(groups.get(range)?.iter().rev());
