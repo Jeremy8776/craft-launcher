@@ -1929,9 +1929,19 @@ fn explain(code: Option<i32>) -> Result<(), String> {
 #[cfg(any(windows, test))]
 mod msi_downgrade;
 
-/// Helpers for Windows Installer PowerShell scripts running under elevation.
+/// All-users Windows Installer work run by an elevated copy of the launcher, under one prompt.
 #[cfg(any(windows, test))]
-mod msi_batch;
+pub mod elevated;
+
+/// `path` as text that can sit inside quotes on a Windows command line.
+#[cfg(any(windows, test))]
+fn windows_text(path: &Path) -> Result<&str, String> {
+    let text = path.to_str().ok_or("unusual characters in a path")?;
+    if text.chars().any(|c| c == '"' || c.is_control()) {
+        return Err(format!("couldn't use {text}: the path contains invalid characters"));
+    }
+    Ok(text)
+}
 /// Builds the Windows Installer command separately so its package argument can be checked
 /// without starting an installer.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1967,7 +1977,7 @@ pub mod windows {
     use artcraft_launcher_core::protocol::CANCELLED;
 
     use super::{
-        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, explain, msi_batch, msi_command, msi_downgrade, msi_folder_argument,
+        CraftApp, INSTALLER, JobPhase, MsiScope, Path, PathBuf, Stop, cancelled, elevated, explain, msi_command, msi_downgrade, msi_folder_argument,
         msi_log, msi_scope_arguments, process, turn,
     };
 
@@ -1990,7 +2000,7 @@ pub mod windows {
 
     /// Runs one MSI by itself: `msiexec` asks for permission itself, and the prompt names the package's
     /// publisher.
-    fn run_direct(msi: &Path, destination: Option<&Path>, scope: Option<MsiScope>) -> Result<(), String> {
+    pub(super) fn run_direct(msi: &Path, destination: Option<&Path>, scope: Option<MsiScope>) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         let mut command = msi_command(&msiexec(), msi)?;
         if let Some(dir) = destination {
@@ -2044,16 +2054,21 @@ pub mod windows {
         phase: &mut dyn FnMut(JobPhase),
     ) -> Result<(), String> {
         if scope == Some(MsiScope::PerMachine) {
-            let mut elevated = None;
-            in_turn(stop, phase, JobPhase::Installing, || {
-                elevated = downgrade_elevated(app, &chosen, &previous, destination, scope)?;
-                Ok(())
-            })?;
-            // Separate prompts are no fallback: refusing a later one would leave no app at all.
-            return match elevated {
-                Some(ended) => msi_downgrade::report(ended, app.name, chosen.version, previous.version),
-                None => Err(msi_downgrade::no_session(app.name, chosen.version)),
+            // Asked before the prompt, so nobody gives permission for a downgrade that can't start.
+            if crate::detect::windows::msi_installs(app).is_empty() {
+                return Err(format!("{} isn't registered with the Windows Installer", app.name));
+            }
+            let package =
+                |p: &Package<'_>| elevated::Package { file: p.file.to_path_buf(), sha256: p.sha256.to_string(), version: p.version.to_string() };
+            let job = elevated::Job {
+                app: app.id.to_string(),
+                chosen: package(&chosen),
+                previous: package(&previous),
+                folder: destination.map(Path::to_path_buf),
             };
+            // One prompt for all three steps: separate prompts are no route, since refusing a
+            // later one would leave no app at all.
+            return in_turn(stop, phase, JobPhase::Installing, || elevated::run(&job, app.name));
         }
         // One turn for all three steps: once the copy is removed, nothing waiting in the queue
         // (another install, or a cancel while waiting) can stop the put-back.
@@ -2069,45 +2084,6 @@ pub mod windows {
         })
     }
 
-    /// The one-prompt route: both packages held unchanged and checked again, then one elevated
-    /// session removes, installs and if needed puts back. `None` when that session can't start.
-    fn downgrade_elevated(
-        app: &CraftApp,
-        chosen: &Package<'_>,
-        previous: &Package<'_>,
-        destination: Option<&Path>,
-        scope: Option<MsiScope>,
-    ) -> Result<Option<msi_downgrade::Ended>, String> {
-        let _held = (msi_batch::hold(chosen.file, chosen.sha256)?, msi_batch::hold(previous.file, previous.sha256)?);
-        let installs = crate::detect::windows::msi_installs(app);
-        if installs.is_empty() {
-            return Err(format!("{} isn't registered with the Windows Installer", app.name));
-        }
-        let removals = installs.iter().map(|m| msi_downgrade::removal(&m.product_code)).collect::<Result<Vec<_>, _>>()?;
-        let script = msi_downgrade::script(
-            msi_batch::text(&msiexec())?,
-            &removals,
-            &msi_batch::line(chosen.file, destination, scope)?,
-            &msi_batch::line(previous.file, destination, scope)?,
-        );
-        let root =
-            std::env::var_os("SystemRoot").map(PathBuf::from).filter(|root| root.is_absolute()).ok_or("SystemRoot is not set to an absolute path")?;
-        let powershell = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
-        let mut command = process::command(&powershell);
-        command
-            .args(["-NoProfile", "-NonInteractive", "-Command"])
-            .arg(msi_batch::outer_script(msi_batch::text(&powershell)?, &msi_batch::encoded(&script)));
-        log::info!("{}: going back to {} under one permission prompt", app.name, chosen.version);
-        let ended = match command.status() {
-            Ok(status) => msi_downgrade::ended(status.code()),
-            Err(e) => {
-                log::warn!("couldn't start PowerShell ({e})");
-                msi_downgrade::Ended::LaunchFailed
-            }
-        };
-        Ok((ended != msi_downgrade::Ended::LaunchFailed).then_some(ended))
-    }
-
     pub fn uninstall_msi(app: &CraftApp, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         in_turn(stop, phase, JobPhase::Removing, || remove_registrations(app).map_err(|removal| removal.error))
     }
@@ -2115,7 +2091,7 @@ pub mod windows {
     /// Removes every Windows Installer registration of `app` in turn, within the caller's queue
     /// turn. A failure says whether an earlier registration was already removed, so a downgrade
     /// knows the app is partly gone.
-    fn remove_registrations(app: &CraftApp) -> Result<(), msi_downgrade::Removal> {
+    pub(super) fn remove_registrations(app: &CraftApp) -> Result<(), msi_downgrade::Removal> {
         let installs = crate::detect::windows::msi_installs(app);
         if installs.is_empty() {
             return Err(msi_downgrade::Removal { error: format!("{} isn't registered with the Windows Installer", app.name), partly: false });

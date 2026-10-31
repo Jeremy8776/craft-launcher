@@ -86,9 +86,11 @@ the route.
 
 ## Still open
 
-- **All-users downgrades:** `downgrade_elevated` still uses the same elevated PowerShell script,
-  and the command strings are still in the binary. Anyone downgrading an all-users app could trigger
-  the same detection.
+- **All-users downgrades:** replaced by a signed helper (`install/elevated.rs`): the launcher starts
+  a copy of its own program elevated, so the one prompt names ArtCraft Launcher, and that copy
+  checks each package's SHA-256 and Authenticode publisher in a ProgramData folder ordinary accounts
+  can't change, then runs `msiexec` directly. No PowerShell, script or encoded command remains in
+  the install code. Not yet run against behavioural antivirus (see Confirmation).
 - **Release:** no release includes #1077 yet.
 - **Confirmation:** test on a Windows VM with Kaspersky and behaviour detection on. Run Update all
   with two or more outdated all-users apps on an affected build, then on a build with #1077. The
