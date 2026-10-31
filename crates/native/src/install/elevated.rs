@@ -368,6 +368,9 @@ fn checked_helper(launcher: &Path, helper: &Path) -> Result<(PathBuf, std::fs::F
         dunce::canonicalize(helper).map_err(|e| refused(format!("couldn't find the installer helper ({e}). Reinstall ArtCraft Launcher")))?;
     let held = open_unchangeable(&resolved).map_err(|e| refused(format!("couldn't read the installer helper ({e})")))?;
     signed_like(launcher, &resolved).map_err(refused)?;
+    // The publisher alone admits any program we ever signed, such as an older launcher renamed
+    // here, which loads planted DLLs when elevated: it must be this build's helper.
+    super::helper_build::check(&resolved).map_err(refused)?;
     Ok((resolved, held))
 }
 

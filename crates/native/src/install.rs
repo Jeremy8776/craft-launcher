@@ -1941,6 +1941,10 @@ pub mod identity;
 #[cfg(any(windows, test))]
 mod held;
 
+/// Which program the launcher may elevate as its helper: our helper, of this build.
+#[cfg(any(windows, test))]
+mod helper_build;
+
 /// `path` as text that can sit inside quotes on a Windows command line.
 #[cfg(any(windows, test))]
 fn windows_text(path: &Path) -> Result<&str, String> {

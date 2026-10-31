@@ -36,11 +36,13 @@ fn wide(path: &Path) -> Vec<u16> {
 /// MD2 and MD4 refused), keeps the state, and hashes the root certificate of the chain WinTrust
 /// built. The state is closed however this returns.
 ///
-/// shortcut: revocation isn't checked, so a revoked Learning Machines certificate would still
-/// pass. Trusted Signing certificates expire three days after issue, which bounds the exposure,
-/// and checking revocation would mean network access from this elevated process and a refusal of
-/// every downgrade offline. Upgrade to `WTD_REVOKE_WHOLECHAIN` with cache-only retrieval if the
-/// publisher's certificates ever live longer.
+/// shortcut: revocation isn't checked, so a package signed with a Learning Machines certificate
+/// that was later revoked still passes. Expiry does not limit this: the packages carry RFC 3161
+/// timestamps, so a signature made while its certificate was valid stays valid after the
+/// certificate expires, and revocation is the only way to withdraw it. Not checked here because it
+/// would mean network access from this elevated process and a refused downgrade whenever offline.
+/// Which revocation policy to adopt, and where (here, or in the unelevated launcher before the
+/// prompt), is a maintainer decision (storytold/craft-launcher#1080).
 #[allow(unsafe_code)]
 fn signing_root(file: &Path) -> Result<String, String> {
     use windows_sys::Win32::Security::WinTrust::{

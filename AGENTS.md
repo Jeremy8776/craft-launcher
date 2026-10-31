@@ -91,6 +91,10 @@ redundant. Removing or "simplifying" one reopens it, so change them only with th
 - **The helper is resolved, held open and publisher-checked before the prompt**
   (`elevated::checked_helper`). That folder is writable by the person's programs, so the prompt
   would otherwise name whatever was put there.
+- **The helper must be this build's helper, not just ours** (`helper_build::check`): its signed
+  VERSIONINFO must say `artcraft-launcher-helper.exe` and the launcher's own version. The publisher
+  alone admits any program we ever signed, such as an older launcher renamed as the helper, which
+  loads planted DLLs when elevated.
 - **The job travels on the command line, and the helper checks every part again.** It trusts
   nothing the unelevated launcher wrote.
 - **Packages are resolved, then held, then hashed and publisher-checked, and that one path goes to
