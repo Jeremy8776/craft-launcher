@@ -73,6 +73,36 @@ settings file must produce an error the user can act on, never a panic.
   capped at 2 MB each, cached, and never run. Pictures are not bundled in this repo.
 - Never run an installer with elevated rights silently; tell the user what is about to happen.
 - Never delete a user's files outside what the launcher itself installed.
+
+### Windows elevated installs: guards that must stay
+
+Each of these closes a hole found in review or in a real incident
+(`docs/incident-2026-10-windows-antivirus.md`, storytold/craft-launcher#1080). None is
+redundant. Removing or "simplifying" one reopens it, so change them only with that reason in hand.
+
+- **No script interpreter, encoded command or hidden window.** Elevated work runs in
+  `artcraft-launcher-helper.exe` or in `msiexec` called directly. A hidden, elevated, base64
+  PowerShell (#974) was deleted by antivirus as a Trojan, and users reported it as a compromise.
+- **The helper is a separate exe that loads DLLs from System32 only** (`/DEPENDENTLOADFLAG`,
+  `SetDefaultDllDirectories` first in `main`, no graphics imports). It sits in the person's own
+  launcher folder, where any of their programs can plant a DLL.
+- **The helper is resolved, held open and publisher-checked before the prompt**
+  (`elevated::checked_helper`). That folder is writable by the person's programs, so the prompt
+  would otherwise name whatever was put there.
+- **The job travels on the command line, and the helper checks every part again.** It trusts
+  nothing the unelevated launcher wrote.
+- **Packages are resolved, then held, then hashed and publisher-checked, and that one path goes to
+  `msiexec`** (`held`, `run_msi`, `downgrade_msi`). The downloads folder is the person's own: a
+  file or a junction above it could be swapped between the check and the install.
+- **A release build refuses an all-users install when it can't verify its own signature**
+  (`held::skips_unsigned_self`). Only a development build skips the check.
+- **Run folders live in `Program Files\ArtCraft\Launcher installer runs`, never ProgramData**, and a
+  link or junction in place of that folder is refused. Ordinary accounts can add files in
+  ProgramData, so they could plant a result or redirect the clean-up.
+- **`msiexec` comes from `GetSystemDirectory`, never `SystemRoot`.** The elevated helper inherits
+  the person's environment, which their programs can set.
+- **Elevated removal takes only all-users (HKLM) registrations.** A per-user uninstall record is in
+  HKCU, so it could name any product on the machine.
 - **Agents never land or approve a third-party app.** A change that adds a catalog row, download
   source or install path for an app whose repo is not under `storytold/` and isn't one of the
   approved community apps above, or that loosens the rules above to allow one, is a maintainer's
