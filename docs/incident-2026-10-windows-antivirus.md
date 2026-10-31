@@ -1,8 +1,8 @@
 # Incident: antivirus flagged ArtCraft Launcher during Update all on Windows
 
-Status (2026-10-31): the Update all route is reverted on `main` (#1077) but not yet released. The
-same elevated PowerShell route is still used by all-users downgrades, and no test has confirmed
-that the revert stops the detection. See [Still open](#still-open).
+Status (2026-10-31): the Update all route is reverted (#1077) and released in v0.11.1. All-users
+downgrades no longer use PowerShell on this branch, and no test has confirmed that the revert stops
+the detection. See [Still open](#still-open).
 
 ## Summary
 
@@ -42,6 +42,7 @@ same elevated script code.
 | Oct 30 09:27 | #1045: Kaspersky reports a Trojan during Update all |
 | Oct 31 03:48 | v0.11.0 published, still with this route; later revoked |
 | Oct 31 05:31 | #1077 merged, reverting #974 |
+| Oct 31 06:25 | v0.11.1 released with #1077 |
 
 ## Evidence
 
@@ -80,18 +81,19 @@ the route.
 
 - #1077 reverts #974, so each all-users update runs `msiexec` directly again. This brings back one
   permission prompt per app.
-- v0.11.0 was revoked, and its release page points users to v0.10.0. v0.10.0 also contains this
-  route, so its users stay exposed until a release with #1077 ships.
+- v0.11.0 was revoked. v0.11.1 ships #1077, so Update all no longer starts PowerShell. Its
+  all-users downgrades still do, until the change below is released.
 - #1076, an alternative that also removed the downgrade route, was closed in favour of #1077.
 
 ## Still open
 
 - **All-users downgrades:** replaced by a signed helper (`install/elevated.rs`): the launcher starts
-  a copy of its own program elevated, so the one prompt names ArtCraft Launcher, and that copy
-  checks each package's SHA-256 and Authenticode publisher in a ProgramData folder ordinary accounts
-  can't change, then runs `msiexec` directly. No PowerShell, script or encoded command remains in
-  the install code. Not yet run against behavioural antivirus (see Confirmation).
-- **Release:** no release includes #1077 yet.
+  a copy of its own program elevated, so the one prompt names ArtCraft Launcher. The job travels on
+  that copy's command line, not in a file. The copy checks each package's SHA-256 and Authenticode
+  publisher, copies it into a new ProgramData folder whose files ordinary accounts can read but not
+  change or delete, installs only into a folder the app is already registered in for all users, and
+  runs `msiexec` directly. No PowerShell, script or encoded command remains in the install code.
+  Not yet released, and not yet run against behavioural antivirus (see Confirmation).
 - **Confirmation:** test on a Windows VM with Kaspersky and behaviour detection on. Run Update all
   with two or more outdated all-users apps on an affected build, then on a build with #1077. The
   test only counts if the affected build reproduces the flag.

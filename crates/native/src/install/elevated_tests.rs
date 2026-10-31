@@ -33,43 +33,105 @@ fn a_run_id_is_32_hex_digits_and_nothing_else_passes() {
     }
 }
 
-#[test]
-fn the_command_line_round_trips_and_refuses_what_could_break_out_of_its_quotes() {
-    let run = new_run().unwrap();
-    let job = Path::new(r"C:\Users\Jo O'Neil\AppData\Local\ArtCraft Launcher\downloads\elevated-x.json");
-    assert_eq!(parameters(&run, job).unwrap(), format!("{FLAG} {run} \"{}\"", job.display()));
-    let args: Vec<OsString> = vec![FLAG.into(), run.clone().into(), job.into()];
-    assert_eq!(parse_args(&args), Some(Ok((run.clone(), job.to_path_buf()))));
-    assert!(parameters(&run, Path::new("C:\\a\"b.json")).is_err());
-    assert!(parameters(&run, Path::new("C:\\a\nb.json")).is_err());
-    assert!(parameters(&run, Path::new("C:\\folder\\")).is_err());
-    assert!(parameters("../../Windows", job).is_err());
+const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SHA_B: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+fn job(folder: Option<&str>) -> Job {
+    let downloads = r"C:\Users\Jo O'Neil\AppData\Local\ArtCraft Launcher\downloads";
+    Job {
+        app: "filmcraft".into(),
+        chosen: Package { file: PathBuf::from(format!(r"{downloads}\filmcraft-0.13.0.msi")), sha256: SHA_A.into(), version: "0.13.0".into() },
+        previous: Package {
+            file: PathBuf::from(format!(r"{downloads}\filmcraft-0.14.0-nightly.2.msi")),
+            sha256: SHA_B.into(),
+            version: "0.14.0-nightly.2".into(),
+        },
+        folder: folder.map(PathBuf::from),
+    }
+}
+
+/// Splits a command line the way the elevated copy receives it: quotes group, and are removed.
+fn split(line: &str) -> Vec<OsString> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let (mut quoted, mut any) = (false, false);
+    for c in line.chars() {
+        match c {
+            '"' => (quoted, any) = (!quoted, true),
+            ' ' if !quoted => {
+                if any || !current.is_empty() {
+                    out.push(std::mem::take(&mut current).into());
+                }
+                any = false;
+            }
+            c => current.push(c),
+        }
+    }
+    if any || !current.is_empty() {
+        out.push(current.into());
+    }
+    out
 }
 
 #[test]
-fn only_the_flag_starts_the_helper_and_a_bad_run_id_is_refused() {
+fn the_whole_job_travels_on_the_command_line_and_round_trips() {
+    let run = new_run().unwrap();
+    for folder in [Some(r"C:\Program Files\ArtCraft\FilmCraft"), None] {
+        let job = job(folder);
+        let line = parameters(&run, &job).unwrap();
+        assert!(line.starts_with(&format!("{FLAG} {run} filmcraft 0.13.0 {SHA_A} \"")), "{line}");
+        assert_eq!(parse_args(&split(&line)), Some(Ok((run.clone(), job))), "{line}");
+    }
+}
+
+#[test]
+fn the_command_line_refuses_what_could_break_out_of_its_quotes_or_isnt_a_checksum() {
+    let run = new_run().unwrap();
+    let good = job(None);
+    let with = |change: &dyn Fn(&mut Job)| {
+        let mut job = good.clone();
+        change(&mut job);
+        parameters(&run, &job)
+    };
+    assert!(with(&|j| j.chosen.file = PathBuf::from("C:\\a\"b.msi")).is_err());
+    assert!(with(&|j| j.previous.file = PathBuf::from("C:\\a\nb.msi")).is_err());
+    assert!(with(&|j| j.folder = Some(PathBuf::from("C:\\Program Files\\FilmCraft\\"))).is_err());
+    assert!(with(&|j| j.chosen.sha256 = "ab".into()).is_err());
+    assert!(with(&|j| j.previous.sha256 = SHA_A.replace('a', "g")).is_err());
+    assert!(with(&|j| j.chosen.version = "0.13.0 /x".into()).is_err());
+    assert!(with(&|j| j.app = "FilmCraft \"x\"".into()).is_err());
+    assert!(parameters("../../Windows", &good).is_err());
+}
+
+#[test]
+fn only_the_flag_starts_the_helper_and_a_bad_job_is_refused() {
     assert_eq!(parse_args(&[]), None);
     assert_eq!(parse_args(&["--hidden".into()]), None);
     assert!(matches!(parse_args(&[FLAG.into()]), Some(Err(_))));
-    assert!(matches!(parse_args(&[FLAG.into(), "..\\x".into(), "job.json".into()]), Some(Err(_))));
     let run = new_run().unwrap();
-    assert!(matches!(parse_args(&[FLAG.into(), run.into(), "job.json".into(), "extra".into()]), Some(Err(_))));
+    let args = split(&parameters(&run, &job(None)).unwrap());
+    let mut extra = args.clone();
+    extra.push("extra".into());
+    assert!(matches!(parse_args(&extra), Some(Err(_))), "one argument too many");
+    // Each checked part is checked again on arrival, whatever the launcher sent.
+    for (at, bad) in [(1, "..\\x"), (2, "Film Craft"), (3, "0.13.0;"), (4, "ab"), (5, "")] {
+        let mut changed = args.clone();
+        changed[at] = bad.into();
+        assert!(matches!(parse_args(&changed), Some(Err(_))), "{at}: {bad}");
+    }
 }
 
 #[test]
-fn a_job_round_trips_and_an_oversized_one_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let job = Job {
-        app: "filmcraft".into(),
-        chosen: Package { file: dir.path().join("a.msi"), sha256: "ab".into(), version: "0.13.0".into() },
-        previous: Package { file: dir.path().join("b.msi"), sha256: "cd".into(), version: "0.14.0".into() },
-        folder: Some(PathBuf::from(r"C:\Program Files\ArtCraft\FilmCraft")),
-    };
-    let file = dir.path().join("job.json");
-    std::fs::write(&file, serde_json::to_string(&job).unwrap()).unwrap();
-    assert_eq!(read_job(&file), Ok(job));
-    std::fs::write(&file, vec![b' '; usize::try_from(MAX_JOB).unwrap() + 1]).unwrap();
-    assert_eq!(read_job(&file), Err("the installer helper's job is too large".into()));
+fn an_install_folder_must_be_one_the_app_is_registered_in_for_all_users() {
+    let registered = [PathBuf::from(r"C:\Program Files\ArtCraft\FilmCraft"), PathBuf::from(r"D:\Apps\FilmCraft")];
+    assert_eq!(checked_folder(None, &registered, "FilmCraft"), Ok(None), "no folder means the package's own");
+    let same = Path::new(r"c:\program files\artcraft\filmcraft\");
+    assert_eq!(checked_folder(Some(same), &registered, "FilmCraft"), Ok(Some(same)));
+    for elsewhere in [r"C:\Windows\System32", r"C:\Program Files\ArtCraft\FilmCraft\sub", r"C:\Program Files\ArtCraft"] {
+        let error = checked_folder(Some(Path::new(elsewhere)), &registered, "FilmCraft").unwrap_err();
+        assert!(error.contains("isn't where FilmCraft is installed for all users"), "{error}");
+    }
+    assert!(checked_folder(Some(Path::new(r"D:\Apps\FilmCraft")), &[], "FilmCraft").is_err(), "nothing registered, no folder");
 }
 
 #[test]
@@ -83,7 +145,7 @@ fn a_staged_copy_is_kept_only_when_it_matches_the_release_checksum() {
     std::fs::write(&swapped.file, b"swapped bytes").unwrap();
     let error = stage(&swapped, dir.path(), PREVIOUS).unwrap_err();
     assert!(error.contains("changed after it was checked"), "{error}");
-    assert!(!dir.path().join(PREVIOUS).exists(), "a copy that failed its check must not stay");
+    assert!(!dir.path().join(PREVIOUS).exists(), "a source that fails its check is never copied");
 
     // A name already there is never written through: an existing file or link stops the stage.
     swapped.file = good.file.clone();
@@ -169,6 +231,21 @@ fn a_helper_that_never_starts_is_reported_without_waiting_for_ever() {
     let dir = tempfile::tempdir().unwrap();
     let error = wait(&dir.path().join(LOCK), std::time::Duration::from_millis(300)).unwrap_err();
     assert!(error.contains("nothing was changed"), "{error}");
+}
+
+/// The source stays exactly as hashed until it is copied: nobody can write, move or delete it.
+#[cfg(windows)]
+#[test]
+fn a_source_being_staged_cannot_be_changed_moved_or_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.msi");
+    std::fs::write(&source, b"checked bytes").unwrap();
+    let held = open_unchangeable(&source).unwrap();
+    assert!(std::fs::OpenOptions::new().write(true).open(&source).is_err(), "written while held");
+    assert!(std::fs::rename(&source, dir.path().join("moved.msi")).is_err(), "moved while held");
+    assert!(std::fs::remove_file(&source).is_err(), "deleted while held");
+    drop(held);
+    assert!(std::fs::rename(&source, dir.path().join("moved.msi")).is_ok());
 }
 
 #[cfg(windows)]

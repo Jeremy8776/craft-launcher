@@ -7,27 +7,33 @@
 //! and its publisher. No script, interpreter or encoded command is involved; every program that
 //! runs elevated is ours or `msiexec`, called directly.
 //!
-//! The elevated copy ([`finish`]) trusts nothing it is handed. It copies each package into a new
-//! folder under ProgramData, which ordinary accounts can read but not change, hashing the copy as
-//! it goes, and refuses a copy whose SHA-256 is not the release checksum or whose Authenticode
-//! publisher is not its own. `msiexec` then installs from that folder, so nothing can be swapped
-//! between the check and the install.
+//! The whole job travels on the elevated copy's command line ([`parameters`]), which nobody can
+//! change once the prompt is up. Nothing it acts on is read from a file the person's account can
+//! write. The elevated copy ([`finish`]) then trusts only what it checks itself:
+//! - each package is opened so nobody can change, move or delete it, hashed, and copied only when
+//!   it has the checksum on the command line, into a new folder under ProgramData whose files
+//!   ordinary accounts can read but not change or delete;
+//! - each copy must carry the same Authenticode publisher as the elevated program;
+//! - the install folder must be the folder of one of the app's all-users registrations, read from
+//!   the registry by the elevated copy, so the caller cannot send an all-users install elsewhere.
 //!
-//! The prompt gives back no handle to wait on, so the two processes meet in that folder: the
-//! elevated copy holds a lock file there without sharing while it works and writes its result
-//! beside it before letting go. The launcher waits for the lock to appear, then to be released,
-//! then reads the result.
+//! `msiexec` then installs from that folder, so nothing can be swapped between the check and the
+//! install.
+//!
+//! The prompt gives back no handle to wait on (`winsafe`'s `ShellExecuteEx` keeps it), so the two
+//! processes meet in that folder: the elevated copy holds a lock file there without sharing while
+//! it works and writes its result beside it before letting go. The launcher waits for the lock to
+//! appear, then to be released, then reads the result.
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// The first argument of the elevated copy, followed by the run id and the job file.
+/// The first argument of the elevated copy, followed by the job ([`parameters`]).
 pub const FLAG: &str = "--elevated-windows-installer";
 
 /// Each run's folder in ProgramData is this followed by the run id.
@@ -41,11 +47,9 @@ const CHOSEN: &str = "chosen.msi";
 const PREVIOUS: &str = "previous.msi";
 /// Every name a run folder can hold, so an old one is cleared file by file, never recursively.
 const RUN_FILES: [&str; 6] = [LOCK, RESULT, CHOSEN, PREVIOUS, "chosen.log", "previous.log"];
-/// A job file is a few hundred bytes; anything far larger is not one of ours.
-const MAX_JOB: u64 = 64 * 1024;
 
 /// One downloaded package: where it is, the checksum it was checked against, and its version.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Package {
     pub file: PathBuf,
     pub sha256: String,
@@ -54,7 +58,7 @@ pub(super) struct Package {
 
 /// An all-users downgrade: remove `app`'s installed copy, install `chosen` in `folder`, and put
 /// `previous` back if that does not finish.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Job {
     pub app: String,
     pub chosen: Package,
@@ -74,77 +78,144 @@ fn valid_run(run: &str) -> bool {
     run.len() == 32 && run.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// A catalogue app id: lower-case letters, digits and hyphens.
+fn valid_app(app: &str) -> bool {
+    !app.is_empty() && app.len() <= 64 && app.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+}
+
+/// A version label such as `0.13.0` or `0.14.0-nightly.3`: nothing that needs quoting.
+fn valid_version(version: &str) -> bool {
+    !version.is_empty() && version.len() <= 64 && version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+}
+
+/// A SHA-256 as 64 hex digits.
+fn valid_sha256(sha256: &str) -> bool {
+    sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn run_dir(base: &Path, run: &str) -> PathBuf {
     base.join(format!("{RUN_PREFIX}{run}"))
 }
 
-/// The elevated copy's command line: [`FLAG`], the run id and the job file in quotes.
-fn parameters(run: &str, job: &Path) -> Result<String, String> {
-    let job = super::windows_text(job)?;
-    if !valid_run(run) || job.ends_with('\\') {
-        return Err(format!("couldn't prepare the installer helper for {job}"));
+/// `path` in quotes on the command line. A trailing backslash would escape the closing quote.
+fn quoted_path(path: &Path) -> Result<String, String> {
+    let text = super::windows_text(path)?;
+    if text.ends_with('\\') {
+        return Err(format!("couldn't prepare the installer helper for {text}"));
     }
-    Ok(format!("{FLAG} {run} \"{job}\""))
+    Ok(format!("\"{text}\""))
 }
 
-/// Reads [`parameters`] back. `None` when this program was not started as the elevated copy.
-fn parse_args(args: &[OsString]) -> Option<Result<(String, PathBuf), String>> {
-    let first = args.first()?;
-    if first != FLAG {
+/// The elevated copy's command line: [`FLAG`], the run id, the app, each package's version,
+/// checksum and file, and the install folder (empty quotes for the package's own).
+fn parameters(run: &str, job: &Job) -> Result<String, String> {
+    let packages = [&job.chosen, &job.previous];
+    if !valid_run(run) || !valid_app(&job.app) || !packages.iter().all(|p| valid_version(&p.version) && valid_sha256(p.sha256.trim())) {
+        return Err(format!("couldn't prepare the installer helper for {}", job.app));
+    }
+    let folder = match &job.folder {
+        Some(folder) => quoted_path(folder)?,
+        None => "\"\"".to_string(),
+    };
+    let package = |p: &Package| -> Result<String, String> { Ok(format!("{} {} {}", p.version, p.sha256.trim(), quoted_path(&p.file)?)) };
+    Ok(format!("{FLAG} {run} {} {} {} {folder}", job.app, package(&job.chosen)?, package(&job.previous)?))
+}
+
+/// Reads [`parameters`] back, checking each part again. `None` when this program was not started
+/// as the elevated copy.
+fn parse_args(args: &[OsString]) -> Option<Result<(String, Job), String>> {
+    if args.first()? != FLAG {
         return None;
     }
-    Some(match args {
-        [_, run, job] if run.to_str().is_some_and(valid_run) => Ok((run.to_string_lossy().into_owned(), PathBuf::from(job))),
-        _ => Err("the installer helper's arguments are incomplete".into()),
-    })
+    let text: Option<Vec<&str>> = args.iter().map(|a| a.to_str()).collect();
+    let package = |version: &str, sha256: &str, file: &str| {
+        (valid_version(version) && valid_sha256(sha256) && !file.is_empty()).then(|| Package {
+            file: PathBuf::from(file),
+            sha256: sha256.to_string(),
+            version: version.to_string(),
+        })
+    };
+    let parsed = match text.as_deref() {
+        Some([_, run, app, cv, cs, cf, pv, ps, pf, folder]) if valid_run(run) && valid_app(app) => {
+            package(cv, cs, cf).zip(package(pv, ps, pf)).map(|(chosen, previous)| {
+                let folder = (!folder.is_empty()).then(|| PathBuf::from(folder));
+                (run.to_string(), Job { app: app.to_string(), chosen, previous, folder })
+            })
+        }
+        _ => None,
+    };
+    Some(parsed.ok_or_else(|| "the installer helper's arguments are incomplete".to_string()))
 }
 
-fn read_job(path: &Path) -> Result<Job, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("couldn't read the installer helper's job ({e})"))?;
-    let mut text = String::new();
-    file.take(MAX_JOB + 1).read_to_string(&mut text).map_err(|e| format!("couldn't read the installer helper's job ({e})"))?;
-    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_JOB {
-        return Err("the installer helper's job is too large".into());
+/// Whether two Windows folders are the same folder, ignoring case and a trailing separator.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let text = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+    text(a).eq_ignore_ascii_case(&text(b))
+}
+
+/// The install folder the elevated copy will use: none (the package's own), or one of the
+/// `registered` all-users folders, never a folder the caller made up.
+fn checked_folder<'a>(folder: Option<&'a Path>, registered: &[PathBuf], app: &str) -> Result<Option<&'a Path>, String> {
+    match folder {
+        None => Ok(None),
+        Some(folder) if registered.iter().any(|r| same_folder(r, folder)) => Ok(Some(folder)),
+        Some(folder) => Err(format!("{} isn't where {app} is installed for all users, so nothing was changed", folder.display())),
     }
-    serde_json::from_str(&text).map_err(|e| format!("couldn't read the installer helper's job ({e})"))
 }
 
-/// Copies `package` to a new file `name` in `dir`, hashing what is written, and keeps the copy
-/// only when it has the package's checksum. The copy is what gets installed.
-fn stage(package: &Package, dir: &Path, name: &str) -> Result<PathBuf, String> {
-    let shown = package.file.display();
-    let mut source = std::fs::File::open(&package.file).map_err(|e| format!("couldn't read {shown} ({e})"))?;
-    let target = dir.join(name);
-    let mut copy = std::fs::File::create_new(&target).map_err(|e| format!("couldn't copy {shown} to install it ({e})"))?;
+/// Opens `file` so nobody can change, move or delete it while it is open: others may only read.
+fn open_unchangeable(file: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// `FILE_SHARE_READ`: no write or delete sharing.
+        const SHARE_READ: u32 = 0x1;
+        std::fs::File::options().read(true).share_mode(SHARE_READ).open(file)
+    }
+    #[cfg(not(windows))]
+    std::fs::File::open(file)
+}
+
+/// Reads `source` to the end into `copy` (if any), and returns the SHA-256 of what was read.
+fn hash_through(source: &mut std::fs::File, mut copy: Option<&mut std::fs::File>) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 64 * 1024];
-    let copied = loop {
-        match source.read(&mut buffer) {
-            Ok(0) => break copy.flush().map_err(|e| format!("couldn't copy {shown} to install it ({e})")),
-            Ok(n) => {
-                let chunk = buffer.get(..n).unwrap_or_default();
-                hasher.update(chunk);
-                if let Err(e) = copy.write_all(chunk) {
-                    break Err(format!("couldn't copy {shown} to install it ({e})"));
-                }
-            }
-            Err(e) => break Err(format!("couldn't read {shown} ({e})")),
+    loop {
+        let n = source.read(&mut buffer)?;
+        let Some(chunk) = buffer.get(..n).filter(|c| !c.is_empty()) else { break };
+        hasher.update(chunk);
+        if let Some(copy) = copy.as_deref_mut() {
+            copy.write_all(chunk)?;
         }
-    };
+    }
+    if let Some(copy) = copy {
+        copy.flush()?;
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Copies `package` to a new file `name` in `dir`. The source is held unchangeable and hashed
+/// first, so nothing is written unless it has the package's checksum: a link to some other file
+/// copies nothing. The copy is hashed as it is written too, and is what gets installed.
+fn stage(package: &Package, dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let shown = package.file.display();
+    let changed = || format!("{shown} changed after it was checked, so it wasn't installed. Try again.");
+    let matches = |digest: &str| digest.eq_ignore_ascii_case(package.sha256.trim());
+    let mut source = open_unchangeable(&package.file).map_err(|e| format!("couldn't read {shown} ({e})"))?;
+    let digest = hash_through(&mut source, None).map_err(|e| format!("couldn't read {shown} ({e})"))?;
+    if !matches(&digest) {
+        return Err(changed());
+    }
+    source.rewind().map_err(|e| format!("couldn't read {shown} ({e})"))?;
+    let target = dir.join(name);
+    let mut copy = std::fs::File::create_new(&target).map_err(|e| format!("couldn't copy {shown} to install it ({e})"))?;
+    let copied = hash_through(&mut source, Some(&mut copy)).map_err(|e| format!("couldn't copy {shown} to install it ({e})"));
     drop(copy);
-    let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    let checked = copied.and_then(|()| {
-        if digest.eq_ignore_ascii_case(package.sha256.trim()) {
-            Ok(())
-        } else {
-            Err(format!("{shown} changed after it was checked, so it wasn't installed. Try again."))
-        }
-    });
-    match checked {
-        Ok(()) => Ok(target),
-        Err(e) => {
+    match copied {
+        Ok(digest) if matches(&digest) => Ok(target),
+        other => {
             let _ = std::fs::remove_file(&target);
-            Err(e)
+            Err(other.err().unwrap_or_else(changed))
         }
     }
 }
@@ -255,36 +326,30 @@ pub(super) fn run(job: &Job, app: &str) -> Result<(), String> {
     use winsafe::{SHELLEXECUTEINFO, ShellExecuteEx, co};
 
     let run = new_run()?;
-    let downloads = job.chosen.file.parent().ok_or("couldn't find the downloaded package's folder")?;
-    let job_file = downloads.join(format!("elevated-{run}.json"));
-    let text = serde_json::to_string(job).map_err(|e| format!("couldn't prepare the installer helper ({e})"))?;
-    std::fs::File::create_new(&job_file)
-        .and_then(|mut f| f.write_all(text.as_bytes()))
-        .map_err(|e| format!("couldn't prepare the installer helper ({e})"))?;
-    let finished = (|| {
-        let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
-        let parameters = parameters(&run, &job_file)?;
-        log::info!("{app}: going back to {} under one permission prompt", job.chosen.version);
-        let asked = ShellExecuteEx(&SHELLEXECUTEINFO {
-            mask: co::SEE_MASK::NOASYNC | co::SEE_MASK::FLAG_NO_UI,
-            verb: Some("runas"),
-            file: super::windows_text(&me)?,
-            parameters: Some(&parameters),
-            // Nothing is hidden: the helper opens no window of its own, and msiexec shows its progress.
-            show: co::SW::SHOWNORMAL,
-            ..Default::default()
-        });
-        match asked {
-            Ok(()) => {}
-            Err(co::ERROR::CANCELLED) => return Err(CANCELLED.to_string()),
-            Err(e) => return Err(format!("couldn't ask Windows for permission ({e}), so nothing was changed")),
-        }
-        let dir = run_dir(&program_data()?, &run);
-        wait(&dir.join(LOCK), std::time::Duration::from_secs(60))?;
-        read_result(&dir, app)
-    })();
-    let _ = std::fs::remove_file(&job_file);
-    finished
+    let parameters = parameters(&run, job)?;
+    let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
+    log::info!("{app}: going back to {} under one permission prompt", job.chosen.version);
+    let asked = ShellExecuteEx(&SHELLEXECUTEINFO {
+        mask: co::SEE_MASK::NOASYNC | co::SEE_MASK::FLAG_NO_UI,
+        verb: Some("runas"),
+        file: super::windows_text(&me)?,
+        parameters: Some(&parameters),
+        // Nothing is hidden: the helper opens no window of its own, and msiexec shows its progress.
+        show: co::SW::SHOWNORMAL,
+        ..Default::default()
+    });
+    match asked {
+        Ok(()) => {}
+        Err(co::ERROR::CANCELLED) => return Err(CANCELLED.to_string()),
+        Err(e) => return Err(format!("couldn't ask Windows for permission ({e}), so nothing was changed")),
+    }
+    // shortcut: the result is read from a folder another process of this account could have made
+    // first under the same run id (it only learns the id once the elevated copy starts, which then
+    // creates the folder at once, and the install itself fails closed). Check that the folder's
+    // owner is Administrators or SYSTEM before trusting the result if that window ever matters.
+    let dir = run_dir(&program_data()?, &run);
+    wait(&dir.join(LOCK), std::time::Duration::from_secs(60))?;
+    read_result(&dir, app)
 }
 
 /// The elevated copy's work, when this program was started with [`FLAG`]; `args` are its arguments
@@ -319,19 +384,23 @@ pub fn finish(args: &[OsString]) -> Option<Result<(), String>> {
     Some(done)
 }
 
-/// Checks and stages both packages, then removes, installs and if needed puts back.
+/// Checks the folder and both packages, stages them, then removes, installs and if needed puts back.
 #[cfg(windows)]
-fn downgrade(dir: &Path, job_file: &Path) -> Result<(), String> {
+fn downgrade(dir: &Path, job: &Job) -> Result<(), String> {
     use super::{MsiScope, msi_downgrade, windows};
 
-    let job = read_job(job_file)?;
     let app = artcraft_launcher_core::catalog::CraftApp::by_id(&job.app).ok_or_else(|| format!("{} isn't a Craft app", job.app))?;
+    let registered: Vec<PathBuf> = crate::detect::windows::msi_installs(app)
+        .into_iter()
+        .filter(|m| m.scope == MsiScope::PerMachine)
+        .filter_map(|m| m.exe.and_then(|exe| exe.parent().map(Path::to_path_buf)))
+        .collect();
+    let folder = checked_folder(job.folder.as_deref(), &registered, app.name)?;
     let me = std::env::current_exe().map_err(|e| format!("couldn't find this program ({e})"))?;
     let chosen = stage(&job.chosen, dir, CHOSEN)?;
     let previous = stage(&job.previous, dir, PREVIOUS)?;
     signed_like(&me, &chosen)?;
     signed_like(&me, &previous)?;
-    let folder = job.folder.as_deref();
     let scope = Some(MsiScope::PerMachine);
     let done = msi_downgrade::run(msi_downgrade::Steps {
         app: app.name,

@@ -1913,7 +1913,7 @@ mod freebsd {
 }
 
 /// What a Windows Installer exit code means for the job that ran it.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn explain(code: Option<i32>) -> Result<(), String> {
     match code {
         Some(0 | 3010 | 1641) => Ok(()),
