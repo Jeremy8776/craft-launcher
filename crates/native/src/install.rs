@@ -2073,6 +2073,12 @@ pub mod windows {
             if crate::detect::windows::msi_installs(app).is_empty() {
                 return Err(format!("{} isn't registered with the Windows Installer", app.name));
             }
+            if let Some(refused) = elevated::refusal(app) {
+                return Err(refused);
+            }
+            // The helper checks both again itself; this only spares a prompt for packages it would refuse.
+            held::check_publisher(app, chosen.file, true)?;
+            held::check_publisher(app, previous.file, true)?;
             let package =
                 |p: &Package<'_>| elevated::Package { file: p.file.to_path_buf(), sha256: p.sha256.to_string(), version: p.version.to_string() };
             let job = elevated::Job {

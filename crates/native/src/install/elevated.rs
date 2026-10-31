@@ -33,6 +33,7 @@ use std::ffi::OsString;
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use artcraft_launcher_core::catalog::{AppKind, CraftApp};
 use sha2::{Digest, Sha256};
 
 /// The first argument of the helper, followed by the job ([`parameters`]).
@@ -319,6 +320,19 @@ fn runs_base() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .map_err(|e| format!("couldn't find the Program Files folder ({e})"))?;
     if path.is_absolute() { Ok(path.join("ArtCraft").join(RUNS)) } else { Err("couldn't find the Program Files folder".into()) }
+}
+
+/// Why an all-users downgrade of `app` can't go through the helper, said before any prompt rather
+/// than after it. The helper installs only packages signed by the launcher's publisher, and a
+/// community app is signed by its own developer. Not relaxed for them: the checksum the helper
+/// checks comes from the launcher running as the person, so it can't be what admits a package.
+pub(super) fn refusal(app: &CraftApp) -> Option<String> {
+    (app.kind != AppKind::Official).then(|| {
+        format!(
+            "ArtCraft Launcher can't install an older version of {} for all users, because {}'s packages aren't signed by ArtCraft Launcher's publisher. Nothing was changed. Use the version's installer from {}'s release page instead.",
+            app.name, app.name, app.name
+        )
+    })
 }
 
 /// The installer helper beside `launcher`, the launcher's own program. Never anywhere else, so

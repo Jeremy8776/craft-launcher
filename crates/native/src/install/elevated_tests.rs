@@ -327,3 +327,12 @@ fn the_helper_is_only_ever_the_one_beside_the_launcher() {
     std::fs::write(dir.path().join(HELPER), b"helper").unwrap();
     assert_eq!(helper_beside(&launcher).unwrap(), dir.path().join(HELPER));
 }
+
+#[test]
+fn a_community_app_is_refused_before_any_prompt() {
+    let community = CraftApp::by_id("solidcraft").unwrap();
+    assert_eq!(community.kind, AppKind::Community);
+    let refused = refusal(community).unwrap();
+    assert!(refused.contains("Nothing was changed") && refused.contains(community.name), "{refused}");
+    assert_eq!(refusal(CraftApp::by_id("photocraft").unwrap()), None);
+}
